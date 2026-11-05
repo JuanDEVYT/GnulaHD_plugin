@@ -1,0 +1,84 @@
+{
+  "id": "gnulahd",
+  "name": "GnulaHD",
+  "version": "1.0.0",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Películas, series y anime en HD en español latino, castellano y subtitulado desde GnulaHD",
+  "author": "JuanDEVYT",
+  "hosts": [
+    "ww3.gnulahd.nu",
+    "vidara.to",
+    "savefiles.com",
+    "byse.sx",
+    "bysevepoin.com",
+    "voe.sx",
+    "image.tmdb.org"
+  ],
+  "streamHosts": "any",
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "categories": [
+    "movies",
+    "series",
+    "anime"
+  ],
+  "color": "#FF7A18",
+  "settings": [
+    {
+      "key": "preferredLang",
+      "label": "Idioma preferido",
+      "type": "select",
+      "hint": "Prioridad de audio para reproducir enlaces",
+      "default": "latino",
+      "options": [
+        { "value": "latino", "label": "Latino" },
+        { "value": "castellano", "label": "Castellano" },
+        { "value": "subtitulado", "label": "Subtitulado" }
+      ]
+    }
+  ],
+  "theme": {
+    "accent": "#FF7A18",
+    "onAccent": "#0B0D12",
+    "background": "#0B0D12",
+    "surface": "#11151D",
+    "highlight": "#FFAE66"
+  },
+  "section": {
+    "label": "GnulaHD",
+    "labelEn": "GnulaHD"
+  },
+  "enhancements": {
+    "14": {
+      "capabilities": [
+        "screen"
+      ],
+      "screen": {
+        "label": "GnulaHD",
+        "labelEn": "GnulaHD",
+        "icon": "movie",
+        "menuOpens": "screen",
+        "opensFrom": [
+          "menu",
+          "settings"
+        ],
+        "settingsButton": {
+          "label": "Abrir GnulaHD",
+          "labelEn": "Open GnulaHD"
+        },
+        "settingsIn": "screen"
+      }
+    },
+    "19": {
+      "capabilities": [
+        "screen"
+      ]
+    }
+  }
+}
