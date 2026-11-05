@@ -1,10 +1,11 @@
 {
   "id": "gnulahd",
   "name": "GnulaHD",
-  "version": "1.0.0",
+  "version": "8.0.0",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Películas, series y anime en HD en español latino, castellano y subtitulado desde GnulaHD",
+  "icon": "icon.png",
+  "description": "Películas, series y anime en HD desde GnulaHD con audio Latino, Castellano y Subtitulado",
   "author": "JuanDEVYT",
   "hosts": [
     "ww3.gnulahd.nu",
@@ -13,7 +14,9 @@
     "byse.sx",
     "bysevepoin.com",
     "voe.sx",
-    "image.tmdb.org"
+    "image.tmdb.org",
+    "1cloudfile.com",
+    "buzzheavier.com"
   ],
   "streamHosts": "any",
   "capabilities": [
@@ -29,20 +32,6 @@
     "anime"
   ],
   "color": "#FF7A18",
-  "settings": [
-    {
-      "key": "preferredLang",
-      "label": "Idioma preferido",
-      "type": "select",
-      "hint": "Prioridad de audio para reproducir enlaces",
-      "default": "latino",
-      "options": [
-        { "value": "latino", "label": "Latino" },
-        { "value": "castellano", "label": "Castellano" },
-        { "value": "subtitulado", "label": "Subtitulado" }
-      ]
-    }
-  ],
   "theme": {
     "accent": "#FF7A18",
     "onAccent": "#0B0D12",
@@ -54,6 +43,29 @@
     "label": "GnulaHD",
     "labelEn": "GnulaHD"
   },
+  "settings": [
+    {
+      "key": "preferredLang",
+      "type": "select",
+      "label": "Idioma de audio preferido",
+      "hint": "Selecciona el idioma prioritario al buscar enlaces",
+      "options": [
+        {
+          "value": "latino",
+          "label": "Latino"
+        },
+        {
+          "value": "castellano",
+          "label": "Castellano"
+        },
+        {
+          "value": "subtitulado",
+          "label": "Subtitulado"
+        }
+      ],
+      "default": "latino"
+    }
+  ],
   "enhancements": {
     "14": {
       "capabilities": [

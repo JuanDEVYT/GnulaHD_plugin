@@ -1,265 +1,329 @@
-// Plugin GnulaHD para Kino
+// Plugin principal de GnulaHD para Kino (v8.0.0)
+import { makeBrowse } from "./browse/index.js";
 import {
   BASE_URL,
-  parseCards,
   fetchHtml,
-  getPlayerPayload,
+  parseCards,
+  parseHeroSlides,
+  gnrdUnpack,
   resolveVidara,
-  resolveSavefiles,
+  resolveSavefiles
 } from "./gnula.js";
-import { makeBrowse } from "./browse/index.js";
 
-function getLangPreference() {
-  try {
-    if (typeof kino !== "undefined" && kino.config && typeof kino.config.get === "function") {
-      return kino.config.get("preferredLang") || "latino";
-    }
-  } catch (_) {}
-  return "latino";
+let browseApp = null;
+function getBrowseApp() {
+  if (!browseApp) {
+    browseApp = makeBrowse({
+      kino: typeof kino !== "undefined" ? kino : null,
+      loadTab: async (tab) => {
+        if (tab === "inicio") {
+          const rows = await home();
+          return { rows };
+        }
+        if (tab === "peliculas") {
+          const res = await browse("peliculas", "1");
+          return {
+            rows: [
+              { id: "peliculas", title: "Películas en HD", ref: "peliculas", items: res.items }
+            ]
+          };
+        }
+        if (tab === "series") {
+          const res = await browse("series", "1");
+          return {
+            rows: [
+              { id: "series", title: "Series de TV", ref: "series", items: res.items }
+            ]
+          };
+        }
+        if (tab === "anime") {
+          const res = await browse("anime", "1");
+          return {
+            rows: [
+              { id: "anime", title: "Anime en HD", ref: "anime", items: res.items }
+            ]
+          };
+        }
+        return { rows: [] };
+      },
+      searchTitles: async (q) => {
+        const res = await search({ q });
+        return Array.isArray(res) ? res : res.items || [];
+      }
+    });
+  }
+  return browseApp;
 }
-
-// ── Search ───────────────────────────────────────────────────────────────────
 
 export async function search(query) {
-  const q = typeof query === "string" ? query.trim() : (query && typeof query.q === "string" ? query.q.trim() : "");
-  if (!q) {
-    return { items: [] };
-  }
-
-  const url = `${BASE_URL}/?s=${encodeURIComponent(q)}`;
-  try {
-    const html = await fetchHtml(url);
-    const items = parseCards(html);
-    return { items };
-  } catch (err) {
-    if (typeof kino !== "undefined" && kino.log) {
-      kino.log("search error: " + (err && err.message));
-    }
-    return { items: [] };
-  }
+  const q = typeof query === "string" ? query : (query && query.q) || "";
+  if (!q.trim()) return { items: [] };
+  const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(q.trim())}`;
+  const html = await fetchHtml(searchUrl);
+  const items = parseCards(html);
+  return { items };
 }
-
-// ── Home ─────────────────────────────────────────────────────────────────────
 
 export async function home() {
-  const categories = [
-    { id: "movies", title: "Películas Recientes", path: "/ver/peliculas/", ref: "peliculas", kind: "movie" },
-    { id: "series", title: "Series Recientes", path: "/ver/series/", ref: "series", kind: "series" },
-    { id: "anime", title: "Anime Reciente", path: "/ver/anime/", ref: "anime", kind: "series" },
-  ];
+  const homeHtml = await fetchHtml(BASE_URL + "/");
+  const heroSlides = parseHeroSlides(homeHtml);
 
-  const rows = await Promise.all(
-    categories.map(async (cat) => {
-      try {
-        const html = await fetchHtml(`${BASE_URL}${cat.path}`);
-        const items = parseCards(html, cat.kind);
-        return {
-          id: cat.id,
-          title: cat.title,
-          ref: cat.ref,
-          items: items.slice(0, 30),
-        };
-      } catch (err) {
-        if (typeof kino !== "undefined" && kino.log) {
-          kino.log(`home category ${cat.id} error: ` + (err && err.message));
-        }
-        return {
-          id: cat.id,
-          title: cat.title,
-          ref: cat.ref,
-          items: [],
-        };
-      }
-    })
-  );
+  const [moviesHtml, seriesHtml, animeHtml, terrorHtml, accionHtml] = await Promise.all([
+    fetchHtml(`${BASE_URL}/ver/peliculas/`),
+    fetchHtml(`${BASE_URL}/ver/series/`),
+    fetchHtml(`${BASE_URL}/ver/anime/`),
+    fetchHtml(`${BASE_URL}/genres/terror/`),
+    fetchHtml(`${BASE_URL}/genres/accion/`)
+  ]);
 
-  return rows.filter((r) => r.items.length > 0);
+  const movieItems = parseCards(moviesHtml, "movie");
+  const seriesItems = parseCards(seriesHtml, "series");
+  const animeItems = parseCards(animeHtml, "series");
+  const terrorItems = parseCards(terrorHtml, "movie");
+  const accionItems = parseCards(accionHtml, "movie");
+
+  const rows = [];
+  if (heroSlides && heroSlides.length > 0) {
+    rows.push({
+      id: "featured",
+      title: "Destacados GnulaHD",
+      ref: "destacados",
+      items: heroSlides
+    });
+  }
+  rows.push({
+    id: "movies",
+    title: "Películas Recientes",
+    ref: "peliculas",
+    items: movieItems
+  });
+  rows.push({
+    id: "series",
+    title: "Series Recientes",
+    ref: "series",
+    items: seriesItems
+  });
+  rows.push({
+    id: "anime",
+    title: "Anime Reciente",
+    ref: "anime",
+    items: animeItems
+  });
+  if (terrorItems.length > 0) {
+    rows.push({
+      id: "terror",
+      title: "Terror · Top Semanal",
+      ref: "genres/terror",
+      items: terrorItems
+    });
+  }
+  if (accionItems.length > 0) {
+    rows.push({
+      id: "accion",
+      title: "Acción · Top Semanal",
+      ref: "genres/accion",
+      items: accionItems
+    });
+  }
+  return rows;
 }
 
-// ── Browse ───────────────────────────────────────────────────────────────────
-
 export async function browse(ref, cursor) {
-  const page = Math.max(1, parseInt(cursor || "1", 10));
-  let path = "/ver/peliculas/";
+  const page = parseInt(cursor || "1", 10);
+  let url = "";
   let defaultKind = "movie";
 
-  const lowerRef = String(ref || "").toLowerCase();
-  if (lowerRef === "series" || lowerRef.includes("/series/")) {
-    path = "/ver/series/";
-    defaultKind = "series";
-  } else if (lowerRef === "anime" || lowerRef.includes("/anime/")) {
-    path = "/ver/anime/";
-    defaultKind = "series";
-  } else if (lowerRef === "peliculas" || lowerRef.includes("/peliculas/")) {
-    path = "/ver/peliculas/";
+  if (ref === "peliculas") {
+    url = `${BASE_URL}/ver/peliculas/?page=${page}`;
     defaultKind = "movie";
+  } else if (ref === "series") {
+    url = `${BASE_URL}/ver/series/?page=${page}`;
+    defaultKind = "series";
+  } else if (ref === "anime") {
+    url = `${BASE_URL}/ver/anime/?page=${page}`;
+    defaultKind = "series";
+  } else if (ref.startsWith("genres/") || ref.startsWith("generos/")) {
+    const slug = ref.replace(/^(genres|generos)\//, "").replace(/\/$/, "");
+    url = `${BASE_URL}/genres/${slug}/?page=${page}`;
+    defaultKind = "movie";
+  } else if (ref.startsWith("http")) {
+    url = ref.includes("?") ? `${ref}&page=${page}` : `${ref}?page=${page}`;
+  } else {
+    url = `${BASE_URL}/genres/${ref}/?page=${page}`;
   }
 
-  const url = `${BASE_URL}${path}?page=${page}`;
   const html = await fetchHtml(url);
   const items = parseCards(html, defaultKind);
-
-  const hasNextPage =
-    html.includes(`page=${page + 1}`) ||
-    html.includes(`page/${page + 1}`) ||
-    items.length >= 40;
-
+  const hasNext = html.includes(`page=${page + 1}`) || items.length >= 40;
   return {
     items,
-    next: hasNextPage ? String(page + 1) : undefined,
+    next: hasNext ? String(page + 1) : null
   };
 }
 
-// ── Episodes ─────────────────────────────────────────────────────────────────
-
 export async function episodes(ref) {
-  const pageUrl = String(ref || "");
-  const html = await fetchHtml(pageUrl);
+  const html = await fetchHtml(ref);
+  const seriesTitle = (html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "").replace(/<[^>]+>/g, "").trim() || "GnulaHD Series";
 
-  const titleMatch = html.match(/<h1[^>]*class="[^"]*gnrd-title[^"]*"[^>]*>([\s\S]*?)<\/h1>/i) ||
-                     html.match(/<title>([^<]+)<\/title>/i);
-  const seriesTitle = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").replace(/\s*\|\s*GnulaHD.*$/i, "").trim() : "Serie";
+  const cardRegex = /<a[^>]*class="[^"]*gnrd-epc[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+  const episodes = [];
+  let match;
 
-  const epMatches = [...html.matchAll(/<a class="gnrd-epc" href="([^"]+)"[^>]*data-id="([^"]+)"[^>]*data-t="([^"]+)"[^>]*data-s="([^"]+)"[^>]*data-e="([^"]+)"/g)];
+  while ((match = cardRegex.exec(html)) !== null) {
+    const fullTag = match[0];
+    const innerHtml = match[1];
 
-  const epList = [];
+    const hrefMatch = fullTag.match(/href="([^"]+)"/);
+    const sMatch = fullTag.match(/data-s="([^"]+)"/);
+    const eMatch = fullTag.match(/data-e="([^"]+)"/);
+    const idMatch = fullTag.match(/data-id="([^"]+)"/);
+    const tMatch = fullTag.match(/data-t="([^"]+)"/);
 
-  for (const m of epMatches) {
-    const epHref = m[1];
-    const dataId = m[2];
-    const dataTok = m[3];
-    const season = parseInt(m[4], 10);
-    const number = parseInt(m[5], 10);
+    if (!hrefMatch) continue;
 
-    const epRef = `${epHref}?id=${dataId}&t=${dataTok}`;
+    const href = hrefMatch[1];
+    const sNum = sMatch ? parseInt(sMatch[1], 10) : 1;
+    const eNum = eMatch ? parseInt(eMatch[1], 10) : 1;
+    const pid = idMatch ? idMatch[1] : "";
+    const tok = tMatch ? tMatch[1] : "";
 
-    epList.push({
-      season: Number.isNaN(season) ? 1 : season,
-      number: Number.isNaN(number) ? 1 : number,
+    const titleMatch = innerHtml.match(/class="[^"]*gnrd-epc-title[^"]*"[^>]*>([\s\S]*?)<\//i);
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : `Episodio ${eNum}`;
+
+    const imgMatch = innerHtml.match(/background-image:\s*url\(["']?([^"')]+)["']?\)/i);
+    const still = imgMatch ? imgMatch[1] : "";
+
+    const epRef = pid && tok ? `${href}?id=${pid}&t=${tok}` : href;
+
+    episodes.push({
+      season: sNum,
+      number: eNum,
       ref: epRef,
-      title: `Episodio ${number}`,
+      title,
+      still
     });
   }
 
-  epList.sort((a, b) => {
-    if (a.season !== b.season) return a.season - b.season;
-    return a.number - b.number;
-  });
+  episodes.sort((a, b) => a.season - b.season || a.number - b.number);
 
   return {
-    series: {
-      title: seriesTitle,
-    },
-    episodes: epList,
+    series: { title: seriesTitle },
+    episodes
   };
 }
 
-// ── Resolve ──────────────────────────────────────────────────────────────────
-
 export async function resolve(ref) {
-  const pageUrl = String(ref || "");
-  const payload = await getPlayerPayload(pageUrl);
+  let pid = null;
+  let tok = null;
 
-  if (!payload || !payload.langs || payload.langs.length === 0) {
-    if (typeof kino !== "undefined" && kino.error) {
-      throw kino.error("unavailable", "No se encontraron reproductores disponibles para este contenido.");
-    }
-    throw new Error("No player payload available");
+  try {
+    const u = new URL(ref);
+    pid = u.searchParams.get("id");
+    tok = u.searchParams.get("t");
+  } catch (_) {}
+
+  if (!pid || !tok) {
+    const html = await fetchHtml(ref);
+    const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
+    const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
+    if (pidMatch) pid = pidMatch[1];
+    if (tokMatch) tok = tokMatch[1];
   }
 
-  const pref = getLangPreference();
-  const sortedLangs = [...payload.langs].sort((a, b) => {
-    const la = (a.label || "").toLowerCase();
-    const lb = (b.label || "").toLowerCase();
-    if (la.includes(pref) && !lb.includes(pref)) return -1;
-    if (!la.includes(pref) && lb.includes(pref)) return 1;
+  if (!pid || !tok) {
+    throw typeof kino !== "undefined" && kino.error
+      ? kino.error("unavailable", "No se encontró el reproductor para este contenido")
+      : new Error("No se encontró el reproductor de GnulaHD");
+  }
+
+  const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
+  const res = await kino.fetch(apiUrl, { headers: { Referer: ref } });
+  const data = await res.json();
+
+  if (!data || !data.p) {
+    throw typeof kino !== "undefined" && kino.error
+      ? kino.error("unavailable", "Respuesta inválida del reproductor de GnulaHD")
+      : new Error("Respuesta vacía del reproductor");
+  }
+
+  const unpacked = gnrdUnpack(data.p);
+  if (!unpacked || !Array.isArray(unpacked.langs)) {
+    throw typeof kino !== "undefined" && kino.error
+      ? kino.error("unavailable", "No se pudieron descifrar los servidores")
+      : new Error("No se pudieron descifrar los servidores");
+  }
+
+  const preferred = (typeof kino !== "undefined" && kino.config && kino.config.get("preferredLang")) || "latino";
+  const sortedLangs = [...unpacked.langs].sort((a, b) => {
+    const aLabel = (a.label || "").toLowerCase();
+    const bLabel = (b.label || "").toLowerCase();
+    if (preferred === "latino" && aLabel.includes("lat")) return -1;
+    if (preferred === "latino" && bLabel.includes("lat")) return 1;
+    if (preferred === "castellano" && (aLabel.includes("cast") || aLabel.includes("esp"))) return -1;
+    if (preferred === "castellano" && (bLabel.includes("cast") || bLabel.includes("esp"))) return 1;
+    if (preferred === "subtitulado" && aLabel.includes("sub")) return -1;
+    if (preferred === "subtitulado" && bLabel.includes("sub")) return 1;
     return 0;
   });
 
-  const allServers = [];
-  for (const lang of sortedLangs) {
-    if (Array.isArray(lang.servers)) {
-      for (const srv of lang.servers) {
-        allServers.push({
-          ...srv,
-          langLabel: lang.label,
-        });
-      }
-    }
-  }
-
   const alternatives = [];
+  let directStream = null;
 
-  for (const srv of allServers) {
-    const src = srv.src || "";
-    try {
-      let resolved = null;
-      if (src.includes("vidara.") || src.includes("vidaraa.") || src.includes("gobsao8u.")) {
-        resolved = await resolveVidara(src);
-      } else if (src.includes("savefiles.")) {
-        resolved = await resolveSavefiles(src);
-      }
-
-      if (resolved && resolved.url) {
-        try {
-          browseScreen().notePlayed(pageUrl);
-        } catch (_) {}
-
-        return {
-          url: resolved.url,
-          mime: resolved.mime || "application/x-mpegURL",
-          headers: resolved.headers || {},
-          alternatives: alternatives.slice(0, 5),
-        };
-      }
-
-      if (src) {
-        alternatives.push({
-          label: `${srv.langLabel} - ${srv.title}`,
-          url: src,
-        });
-      }
-    } catch (err) {
-      if (typeof kino !== "undefined" && kino.log) {
-        kino.log(`Resolver ${srv.title} failed: ` + (err && err.message));
+  for (const l of sortedLangs) {
+    if (!Array.isArray(l.servers)) continue;
+    for (const s of l.servers) {
+      const src = s.src || "";
+      if (!src) continue;
+      if (src.includes("vidara")) {
+        const streamObj = await resolveVidara(src);
+        if (streamObj && !directStream) {
+          directStream = streamObj;
+        } else if (streamObj) {
+          alternatives.push({
+            name: `${s.title || "Vidara"} (${l.label || "Video"})`,
+            url: streamObj.url,
+            mime: streamObj.mime
+          });
+        }
+      } else if (src.includes("savefiles")) {
+        const streamObj = await resolveSavefiles(src);
+        if (streamObj && !directStream) {
+          directStream = streamObj;
+        } else if (streamObj) {
+          alternatives.push({
+            name: `${s.title || "Savefiles"} (${l.label || "Video"})`,
+            url: streamObj.url,
+            mime: streamObj.mime
+          });
+        }
       }
     }
   }
 
-  if (alternatives.length > 0) {
+  if (directStream) {
     return {
-      url: alternatives[0].url,
-      label: alternatives[0].label,
-      alternatives: alternatives.slice(1),
+      ...directStream,
+      alternatives: alternatives.length > 0 ? alternatives : undefined
     };
   }
 
-  if (typeof kino !== "undefined" && kino.error) {
-    throw kino.error("unavailable", "Los servidores de video no están disponibles actualmente.");
-  }
-  throw new Error("No stream found");
+  throw typeof kino !== "undefined" && kino.error
+    ? kino.error("unavailable", "No hay servidores disponibles para reproducir")
+    : new Error("No hay servidores de video reproducibles disponibles");
 }
 
-// ── Section ──────────────────────────────────────────────────────────────────
-
-async function loadTabPage(tab) {
-  if (tab === "inicio") {
-    const rows = await home();
-    return { rows };
-  }
-  if (tab === "peliculas") {
-    const res = await browse("peliculas", "1");
-    return { rows: [{ id: "peliculas", title: "Películas en HD", ref: "peliculas", items: res.items }] };
-  }
-  if (tab === "series") {
-    const res = await browse("series", "1");
-    return { rows: [{ id: "series", title: "Series de TV", ref: "series", items: res.items }] };
-  }
-  if (tab === "anime") {
-    const res = await browse("anime", "1");
-    return { rows: [{ id: "anime", title: "Anime en HD", ref: "anime", items: res.items }] };
-  }
-  return { rows: [] };
+export async function categories() {
+  return [
+    { id: "peliculas", ref: "peliculas", title: "Películas", titleEn: "Movies", icon: "movie" },
+    { id: "series", ref: "series", title: "Series", titleEn: "Series", icon: "tv" },
+    { id: "anime", ref: "anime", title: "Anime", titleEn: "Anime", icon: "animation" },
+    { id: "terror", ref: "genres/terror", title: "Terror", titleEn: "Horror", icon: "psychology" },
+    { id: "accion", ref: "genres/accion", title: "Acción", titleEn: "Action", icon: "flash_on" },
+    { id: "comedia", ref: "genres/comedia", title: "Comedia", titleEn: "Comedy", icon: "sentiment_very_satisfied" },
+    { id: "ciencia-ficcion", ref: "genres/ciencia-ficcion", title: "Ciencia Ficción", titleEn: "Sci-Fi", icon: "rocket" },
+    { id: "suspenso", ref: "genres/suspenso", title: "Suspenso", titleEn: "Thriller", icon: "visibility" },
+    { id: "animacion", ref: "genres/animacion", title: "Animación", titleEn: "Animation", icon: "brush" }
+  ];
 }
 
 export async function section(ctx) {
@@ -268,50 +332,23 @@ export async function section(ctx) {
     { id: "inicio", label: "Inicio", labelEn: "Home" },
     { id: "peliculas", label: "Películas", labelEn: "Movies" },
     { id: "series", label: "Series", labelEn: "Series" },
-    { id: "anime", label: "Anime", labelEn: "Anime" },
+    { id: "anime", label: "Anime", labelEn: "Anime" }
   ];
   const chosen = tabs.some((x) => x.id === tab) ? tab : tabs[0].id;
-  const page = await loadTabPage(chosen);
+  const page = await getBrowseApp().loadTab(chosen);
   return {
     tabs,
     tab: chosen,
-    rows: page.rows,
+    rows: page ? page.rows : []
   };
 }
 
-export async function categories() {
-  return [
-    { id: "peliculas", ref: "peliculas", title: "Películas", titleEn: "Movies", icon: "movie" },
-    { id: "series", ref: "series", title: "Series", titleEn: "Series", icon: "tv" },
-    { id: "anime", ref: "anime", title: "Anime", titleEn: "Anime", icon: "animation" },
-  ];
-}
-
-// ── Screen capability ────────────────────────────────────────────────────────
-
-let browseInstance = null;
-
-function browseScreen() {
-  if (browseInstance) return browseInstance;
-
-  browseInstance = makeBrowse({
-    kino: typeof kino !== "undefined" ? kino : {},
-    loadTab: async (tab) => loadTabPage(tab),
-    searchTitles: async (q) => {
-      const res = await search(q);
-      return res.items || [];
-    },
-  });
-
-  return browseInstance;
-}
-
 export async function screen(ctx) {
-  await null;
-  return browseScreen().view(ctx && typeof ctx === "object" ? ctx : {});
+  const app = getBrowseApp();
+  return app.view(ctx);
 }
 
 export async function screenEvent(ev) {
-  await null;
-  return browseScreen().event(ev && typeof ev === "object" ? ev : {});
+  const app = getBrowseApp();
+  return app.event(ev);
 }

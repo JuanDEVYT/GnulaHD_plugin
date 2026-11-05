@@ -1,15 +1,19 @@
-# GnulaHD — Plugin para Kino
+# GnulaHD — Plugin para Kino (v8.0.0)
 
-Plugin oficial de GnulaHD para la aplicación [Kino](https://kino.app). Ofrece catálogo completo de películas, series y anime en alta definición con opciones de audio en Español Latino, Castellano y Subtitulado, junto a una interfaz declarativa optimizada tanto para móviles como para TV (D-pad y mando).
+Plugin oficial de GnulaHD para la aplicación [Kino](https://kino.app). Ofrece catálogo completo de películas, series y anime en alta definición con opciones de audio en Español Latino, Castellano y Subtitulado, filtros por géneros, integración con `kino.meta` (TMDB) y una interfaz declarativa optimizada tanto para móviles como para TV (D-pad y mando).
 
 ## Características
 
 - **Catálogo Completo**: Películas, series de televisión y anime actualizados directamente desde GnulaHD.
-- **Múltiples Audios**: Soporte para audio Latino, Castellano y Subtitulado, con selector de preferencia de idioma predeterminado.
-- **Reproducción Directa en HD**: Resolución automática de streams HLS (m3u8 hasta 1080p) a través de Vidara y servidores alternativos.
+- **Hero Slider con Backdrops 1080p y Logos**: Portada con los títulos destacados oficiales extraídos con arte panorámico en alta definición y logos transparentes de TMDB.
+- **Integración con `kino.meta`**: Enriquecimiento automático de sinopsis oficial, reparto, directores y trailers en español.
+- **Filtros por Géneros**: Acceso directo a categorías de Terror, Acción, Comedia, Ciencia Ficción, Suspenso y Animación.
+- **Icono Oficial e Identidad Visual**: Isotipo oficial del dragón "G" en `#FF7A18` y banner original de GnulaHD.
+- **Múltiples Audios**: Soporte para audio Latino, Castellano y Subtitulado, con selector de preferencia de idioma predeterminado en Ajustes.
+- **Reproducción Directa en HD**: Resolución automática de streams HLS (m3u8 hasta 1080p) a través de Vidara y Savefiles como alternativa.
 - **Interfaz Nativa Declarativa (`screen`)**:
   - Carrusel destacado (*Hero Card*) con controles de reproducción e información.
-  - Rieles temáticos horizontales (*Title Rails*) para Películas, Series y Anime.
+  - Rieles temáticos horizontales (*Title Rails*) para Películas, Series, Anime y géneros top.
   - Historial integrado de *Continuar viendo*.
   - Buscador integrado y pantalla de ajustes nativa.
   - Totalmente navegable con D-Pad en Android TV y control remoto.

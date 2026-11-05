@@ -44,7 +44,8 @@ export function makeMetaCache({ kino, clock = { now: () => Date.now() } }) {
     return {
       ...(e.t > 0 ? { tmdb: e.t } : {}),
       ...(e.l && HTTPS.test(e.l) ? { logo: e.l } : {}),
-      ...(e.b && HTTPS.test(e.b) && e.o ? { backdrop: e.b, overview: e.o } : {}),
+      ...(e.b && HTTPS.test(e.b) ? { backdrop: e.b } : {}),
+      ...(e.o ? { overview: e.o } : {}),
     };
   }
 
@@ -54,7 +55,8 @@ export function makeMetaCache({ kino, clock = { now: () => Date.now() } }) {
     return cards.map((c) => {
       const k = known(c.id);
       const withId = k.tmdb && !(c.ids && c.ids.tmdb) ? { ...c, ids: { ...(c.ids || {}), tmdb: k.tmdb } } : c;
-      return k.backdrop && !withId.backdrop ? { ...withId, backdrop: k.backdrop } : withId;
+      const withBackdrop = k.backdrop && !withId.backdrop ? { ...withId, backdrop: k.backdrop } : withId;
+      return k.logo && !withBackdrop.logo ? { ...withBackdrop, logo: k.logo } : withBackdrop;
     });
   }
 
@@ -70,20 +72,27 @@ export function makeMetaCache({ kino, clock = { now: () => Date.now() } }) {
       await Promise.all(
         slice.map(async (c) => {
           try {
-            const res = await kino.meta({ title: c.title, kind: c.kind, year: c.year });
+            const type = c.kind === "series" ? "series" : "movie";
+            const yearNum = c.year ? parseInt(c.year, 10) : undefined;
+            const res = await kino.meta({
+              type,
+              title: c.title,
+              ...(yearNum && yearNum > 1900 ? { year: yearNum } : {}),
+            });
             count++;
             if (!res) {
               read()[c.id] = { t: 0, l: "" };
             } else {
+              const tmdbId = (res.ids && res.ids.tmdb) || res.id || 0;
               read()[c.id] = {
-                t: res.id || 0,
+                t: tmdbId,
                 l: res.logo || "",
                 b: res.backdrop || "",
                 o: res.overview || "",
               };
             }
           } catch (_) {
-            // no almacenar error temporal
+            // no almacenar fallo temporal
           }
         })
       );

@@ -1,7 +1,5 @@
-// Scraper y resolver para GnulaHD (https://ww3.gnulahd.nu)
-
+// Scraper y resolutor de servidores para GnulaHD (ww3.gnulahd.nu).
 export const BASE_URL = "https://ww3.gnulahd.nu";
-
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -19,119 +17,247 @@ export function gnrdUnpack(s) {
   }
 }
 
-function cleanText(str) {
-  if (!str) return "";
-  return str.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+function cleanId(raw) {
+  let s = raw;
+  try {
+    s = decodeURIComponent(s);
+  } catch (_) {}
+  let id = s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9._~-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 128);
+  if (!id) id = "item-" + Math.abs(hashCode(raw));
+  return id;
+}
+
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
 }
 
 export function parseCards(html, defaultKind = "movie") {
-  const items = [];
+  const cards = [];
   const cardRegex = /<a class="gnrd-card" href="([^"]+)" title="([^"]+)">([\s\S]*?)<\/a>/g;
   let match;
 
   while ((match = cardRegex.exec(html)) !== null) {
     const href = match[1];
-    const rawTitle = match[2];
-    const inner = match[3];
+    const title = match[2].trim();
+    const body = match[3];
 
-    // Slug como id limpio cumpliendo ^[A-Za-z0-9._~-]{1,128}$
     const slugMatch = href.match(/\/ver\/([^\/]+)/);
-    let rawSlug = slugMatch ? slugMatch[1] : href.replace(/^https?:\/\/[^\/]+\//, "");
-    try {
-      rawSlug = decodeURIComponent(rawSlug);
-    } catch (_) {}
-    let id = rawSlug
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^A-Za-z0-9._~-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 128);
-    if (!id) id = "item-" + Date.now().toString(36);
+    const rawSlug = slugMatch ? slugMatch[1] : href.replace(/^https?:\/\/[^\/]+\//, "");
+    const id = cleanId(rawSlug);
 
-    // Poster
-    const imgMatch = inner.match(/<img[^>]+src="([^"]+)"/i);
-    const poster = imgMatch ? imgMatch[1] : undefined;
+    const imgMatch = body.match(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"/i);
+    const poster = imgMatch ? imgMatch[1] : "";
 
-    // Rating (ej: "★ 7.7")
-    const ratingMatch = inner.match(/class="[^"]*rating[^"]*">[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
+    const ratingMatch = body.match(/class="gnrd-rating"[^>]*>★?\s*([0-9.]+)/i);
     const rating = ratingMatch ? parseFloat(ratingMatch[1]) : undefined;
 
-    // Año
-    const yearMatch = inner.match(/<span>(19\d{2}|20\d{2})<\/span>/);
-    const year = yearMatch ? parseInt(yearMatch[1], 10) : undefined;
+    const yearMatch = body.match(/<span>(\b(19\d\d|20\d\d)\b)<\/span>/);
+    const year = yearMatch ? yearMatch[1] : undefined;
 
-    // Badges de idioma
-    const langMatches = [...inner.matchAll(/class="gnrd-lang">([^<]+)<\/span>/g)].map(m => m[1].trim());
-    const badges = langMatches.slice(0, 3);
-
-    // Kind detection
-    let kind = defaultKind;
-    if (inner.includes("Serie") || href.includes("-temporada-") || href.includes("serie")) {
-      kind = "series";
-    } else if (inner.includes("Anime")) {
-      kind = "series";
+    const badges = [];
+    const langMatches = body.matchAll(/class="gnrd-lang"[^>]*>([^<]+)<\/span>/g);
+    for (const lm of langMatches) {
+      const l = lm[1].trim();
+      if (l && !badges.includes(l)) badges.push(l);
     }
 
-    const title = cleanText(rawTitle);
-    if (!title) continue;
+    let kind = defaultKind;
+    if (/serie/i.test(body) || href.includes("/ver/series/")) {
+      kind = "series";
+    } else if (href.includes("/ver/anime/")) {
+      kind = "series";
+    } else if (href.includes("/ver/peliculas/")) {
+      kind = "movie";
+    }
 
-    const item = {
+    cards.push({
       id,
       ref: href,
       title,
       kind,
-    };
-
-    if (poster && /^https?:\/\//.test(poster)) item.poster = poster;
-    if (rating !== undefined && !Number.isNaN(rating)) item.rating = rating;
-    if (year !== undefined && !Number.isNaN(year)) item.year = year;
-    if (badges.length > 0) item.badges = badges;
-
-    items.push(item);
+      poster,
+      backdrop: "",
+      rating,
+      year,
+      badges: badges.slice(0, 3),
+    });
   }
 
-  return items;
+  return cards;
 }
 
-export async function fetchHtml(url, referer = BASE_URL) {
+export function parseHeroSlides(html) {
+  const slides = [];
+  const slideRegex = /<div class="gnrd-slide[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/g;
+  let match;
+
+  while ((match = slideRegex.exec(html)) !== null) {
+    const block = match[1];
+    const bgMatch = block.match(/background-image:url\('([^']+)'\)/i);
+    const backdrop = bgMatch ? bgMatch[1] : "";
+
+    const logoMatch = block.match(/<img class="gnrd-hero-logo" src="([^"]+)" alt="([^"]+)"/i);
+    const logo = logoMatch ? logoMatch[1] : "";
+    let title = logoMatch ? logoMatch[2].trim() : "";
+
+    const playMatch = block.match(/href="([^"]+)"[^>]*>▶\s*Reproducir/i);
+    if (!playMatch) continue;
+    const ref = playMatch[1];
+
+    if (!title) {
+      const slugMatch = ref.match(/\/ver\/([^\/]+)/);
+      title = slugMatch ? slugMatch[1].replace(/-/g, " ") : "Destacado";
+    }
+
+    const synMatch = block.match(/<p class="gnrd-hero-syn">([\s\S]*?)<\/p>/i);
+    const overview = synMatch ? synMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+
+    const yearMatch = block.match(/<span>(\b(19\d\d|20\d\d)\b)<\/span>/);
+    const year = yearMatch ? yearMatch[1] : undefined;
+
+    const ratingMatch = block.match(/class="gnrd-m-rating"[^>]*>★?\s*([0-9.]+)/i);
+    const rating = ratingMatch ? parseFloat(ratingMatch[1]) : undefined;
+
+    const isSeries = /serie/i.test(block) || /temporada/i.test(block);
+    const kind = isSeries ? "series" : "movie";
+
+    const slugMatch = ref.match(/\/ver\/([^\/]+)/);
+    const rawSlug = slugMatch ? slugMatch[1] : ref;
+    const id = cleanId(rawSlug);
+
+    slides.push({
+      id,
+      ref,
+      title,
+      kind,
+      backdrop,
+      logo,
+      overview,
+      year,
+      rating,
+      poster: backdrop,
+    });
+  }
+
+  return slides;
+}
+
+export async function fetchHtml(url) {
   const res = await kino.fetch(url, {
     headers: {
       "User-Agent": USER_AGENT,
-      "Referer": referer,
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+      Referer: BASE_URL + "/",
     },
   });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} al cargar ${url}`);
+    throw kino.error("unavailable", `Error de conexión con GnulaHD (HTTP ${res.status})`);
   }
   return await res.text();
 }
 
-export async function fetchJson(url, referer = BASE_URL) {
+export async function fetchJson(url, referer) {
   const res = await kino.fetch(url, {
     headers: {
       "User-Agent": USER_AGENT,
-      "Referer": referer,
-      "Accept": "application/json,text/plain,*/*",
+      Referer: referer || BASE_URL + "/",
+      Accept: "application/json",
     },
   });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} al cargar JSON ${url}`);
-  }
+  if (!res.ok) return null;
   return await res.json();
 }
 
-export async function getPlayerPayload(pageUrl, html) {
-  const u = new URL(pageUrl, BASE_URL);
-  let pid = u.searchParams.get("id");
-  let tok = u.searchParams.get("t");
+export async function resolveVidara(url) {
+  const m = url.match(/(?:vidara\.[a-z]+|vidaraa\.[a-z]+)\/(?:e\/)?([A-Za-z0-9_-]+)/i);
+  if (!m) return null;
+  const filecode = m[1];
+  try {
+    const res = await kino.fetch("https://vidara.to/api/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+        Referer: `https://vidara.to/e/${filecode}`,
+        Origin: "https://vidara.to",
+      },
+      body: JSON.stringify({
+        filecode,
+        device: "desktop",
+        codecs: ["h264", "aac"],
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.streaming_url) {
+      return {
+        url: data.streaming_url,
+        mime: "application/x-mpegURL",
+        headers: {
+          Referer: `https://vidara.to/e/${filecode}`,
+          "User-Agent": USER_AGENT,
+        },
+      };
+    }
+  } catch (_) {}
+  return null;
+}
+
+export async function resolveSavefiles(url) {
+  const m = url.match(/savefiles\.com\/(?:e\/)?([A-Za-z0-9_-]+)/i);
+  if (!m) return null;
+  const filecode = m[1];
+  try {
+    const bodyStr = `op=embed&file_code=${encodeURIComponent(filecode)}&auto=1&referer=${encodeURIComponent(BASE_URL + "/")}`;
+    const res = await kino.fetch("https://savefiles.com/dl", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": USER_AGENT,
+        Referer: `https://savefiles.com/e/${filecode}`,
+        Origin: "https://savefiles.com",
+      },
+      body: bodyStr,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const m3u8Match = html.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/);
+    if (m3u8Match) {
+      return {
+        url: m3u8Match[0],
+        mime: "application/x-mpegURL",
+        headers: {
+          Referer: `https://savefiles.com/e/${filecode}`,
+          "User-Agent": USER_AGENT,
+        },
+      };
+    }
+  } catch (_) {}
+  return null;
+}
+
+export async function getPlayerPayload(ref) {
+  let pid = null;
+  let tok = null;
+
+  try {
+    const u = new URL(ref);
+    pid = u.searchParams.get("id");
+    tok = u.searchParams.get("t");
+  } catch (_) {}
 
   if (!pid || !tok) {
-    if (!html) {
-      html = await fetchHtml(pageUrl, BASE_URL);
-    }
+    const html = await fetchHtml(ref);
     const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
     const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
     if (pidMatch && tokMatch) {
@@ -140,82 +266,11 @@ export async function getPlayerPayload(pageUrl, html) {
     }
   }
 
-  if (!pid || !tok) {
-    return null;
-  }
+  if (!pid || !tok) return null;
 
   const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
-  const data = await fetchJson(apiUrl, pageUrl);
+  const data = await fetchJson(apiUrl, ref);
   if (!data || !data.p) return null;
 
   return gnrdUnpack(data.p);
-}
-
-export async function resolveVidara(url) {
-  const m = url.match(/(?:vidara\.[a-z]+|vidaraa\.[a-z]+|gobsao8u\.[a-z]+)\/(?:e\/)?([A-Za-z0-9_-]+)/i);
-  if (!m) return null;
-  const filecode = m[1];
-  const hostMatch = url.match(/https?:\/\/([^\/]+)/i);
-  const host = hostMatch ? hostMatch[1] : "vidara.to";
-
-  const res = await kino.fetch(`https://${host}/api/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": USER_AGENT,
-      "Referer": `https://${host}/e/${filecode}`,
-      "Origin": `https://${host}`,
-    },
-    body: JSON.stringify({ filecode, device: "desktop", codecs: ["h264", "aac"] }),
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  if (data && data.streaming_url) {
-    return {
-      url: data.streaming_url,
-      mime: "application/x-mpegURL",
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Referer": `https://${host}/`,
-      },
-    };
-  }
-  return null;
-}
-
-export async function resolveSavefiles(url) {
-  const m = url.match(/savefiles\.com\/(?:e\/)?([A-Za-z0-9_-]+)/i);
-  if (!m) return null;
-  const filecode = m[1];
-  const params = new URLSearchParams({
-    op: "embed",
-    file_code: filecode,
-    auto: "1",
-    referer: BASE_URL,
-  });
-
-  const res = await kino.fetch("https://savefiles.com/dl", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": USER_AGENT,
-      "Referer": `https://savefiles.com/e/${filecode}`,
-      "Origin": "https://savefiles.com",
-    },
-    body: params.toString(),
-  });
-  if (!res.ok) return null;
-  const html = await res.text();
-  const m3u8Match = html.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/);
-  if (m3u8Match) {
-    return {
-      url: m3u8Match[0],
-      mime: "application/x-mpegURL",
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Referer": `https://savefiles.com/`,
-      },
-    };
-  }
-  return null;
 }
