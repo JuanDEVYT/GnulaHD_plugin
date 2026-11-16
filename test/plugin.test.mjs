@@ -32,6 +32,17 @@ test("search finds titles", () => {
   assert.match(data.items[0].title.toLowerCase(), /batman/);
 });
 
+test("search correctly identifies series with kind series", () => {
+  const raw = execFileSync("node", ["sdk/run.mjs", ".", "search", JSON.stringify({ q: "breaking bad" })], {
+    encoding: "utf-8"
+  });
+  const data = JSON.parse(raw);
+  assert.ok(data.items.length > 0);
+  const bb = data.items.find((i) => i.id === "breaking-bad");
+  assert.ok(bb, "Breaking Bad should be found");
+  assert.equal(bb.kind, "series", "Breaking Bad must have kind series");
+});
+
 test("browse returns paginated results", () => {
   const raw = execFileSync("node", ["sdk/run.mjs", ".", "browse", "peliculas"], {
     encoding: "utf-8"

@@ -1,8 +1,10 @@
-// Plugin principal de GnulaHD para Kino (v8.0.0)
+// Plugin principal de GnulaHD para Kino (v8.0.1)
 import { makeBrowse } from "./browse/index.js";
 import {
   BASE_URL,
   fetchHtml,
+  fetchJson,
+  cleanId,
   parseCards,
   parseHeroSlides,
   gnrdUnpack,
@@ -57,10 +59,76 @@ function getBrowseApp() {
 
 export async function search(query) {
   const q = typeof query === "string" ? query : (query && query.q) || "";
-  if (!q.trim()) return { items: [] };
-  const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(q.trim())}`;
-  const html = await fetchHtml(searchUrl);
-  const items = parseCards(html);
+  const queryType = typeof query === "object" && query ? query.type : null;
+  const cleanQ = q.trim();
+  if (!cleanQ) return { items: [] };
+
+  const jsonUrl = `${BASE_URL}/wp-json/gnrd/v1/search?q=${encodeURIComponent(cleanQ)}`;
+  const htmlUrl = `${BASE_URL}/?s=${encodeURIComponent(cleanQ)}`;
+
+  const [jsonRes, htmlRes] = await Promise.allSettled([
+    fetchJson(jsonUrl),
+    fetchHtml(htmlUrl)
+  ]);
+
+  const typeMap = new Map();
+  const jsonResults =
+    jsonRes.status === "fulfilled" && jsonRes.value && Array.isArray(jsonRes.value.results)
+      ? jsonRes.value.results
+      : [];
+
+  for (const r of jsonResults) {
+    if (r.url && r.type) {
+      typeMap.set(r.url, r.type);
+      const m = r.url.match(/\/ver\/([^\/]+)/);
+      if (m) typeMap.set(m[1], r.type);
+    }
+  }
+
+  const defaultKind = queryType === "series" ? "series" : "movie";
+  let items = [];
+
+  if (htmlRes.status === "fulfilled" && htmlRes.value) {
+    items = parseCards(htmlRes.value, defaultKind, typeMap);
+  }
+
+  if (items.length === 0 && jsonResults.length > 0) {
+    items = jsonResults.map((r) => {
+      const slugMatch = r.url.match(/\/ver\/([^\/]+)/);
+      const rawSlug = slugMatch ? slugMatch[1] : r.url.replace(/^https?:\/\/[^\/]+\//, "");
+      const isSeries = /serie|anime/i.test(r.type || "") || queryType === "series";
+      return {
+        id: cleanId(rawSlug),
+        ref: r.url,
+        title: r.title,
+        kind: isSeries ? "series" : "movie",
+        poster: r.img || "",
+        backdrop: "",
+        year: r.year ? String(r.year) : undefined,
+        badges: r.type ? [r.type] : []
+      };
+    });
+  } else if (items.length > 0 && jsonResults.length > 0) {
+    const existingRefs = new Set(items.map((i) => i.ref));
+    for (const r of jsonResults) {
+      if (!existingRefs.has(r.url)) {
+        const slugMatch = r.url.match(/\/ver\/([^\/]+)/);
+        const rawSlug = slugMatch ? slugMatch[1] : r.url.replace(/^https?:\/\/[^\/]+\//, "");
+        const isSeries = /serie|anime/i.test(r.type || "") || queryType === "series";
+        items.push({
+          id: cleanId(rawSlug),
+          ref: r.url,
+          title: r.title,
+          kind: isSeries ? "series" : "movie",
+          poster: r.img || "",
+          backdrop: "",
+          year: r.year ? String(r.year) : undefined,
+          badges: r.type ? [r.type] : []
+        });
+      }
+    }
+  }
+
   return { items };
 }
 

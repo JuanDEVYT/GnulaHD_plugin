@@ -17,7 +17,7 @@ export function gnrdUnpack(s) {
   }
 }
 
-function cleanId(raw) {
+export function cleanId(raw) {
   let s = raw;
   try {
     s = decodeURIComponent(s);
@@ -42,7 +42,7 @@ function hashCode(str) {
   return hash;
 }
 
-export function parseCards(html, defaultKind = "movie") {
+export function parseCards(html, defaultKind = "movie", typeMap = null) {
   const cards = [];
   const cardRegex = /<a class="gnrd-card" href="([^"]+)" title="([^"]+)">([\s\S]*?)<\/a>/g;
   let match;
@@ -72,8 +72,20 @@ export function parseCards(html, defaultKind = "movie") {
       if (l && !badges.includes(l)) badges.push(l);
     }
 
+    const genreMatch = body.match(/class="gnrd-card-genres"[^>]*>([^<]+)<\//i);
+    const genres = genreMatch
+      ? genreMatch[1].split(/[·,]/).map((s) => s.trim()).filter(Boolean).slice(0, 5)
+      : [];
+
     let kind = defaultKind;
-    if (/serie/i.test(body) || href.includes("/ver/series/")) {
+    const mappedType = typeMap
+      ? (typeMap.get(href) || (rawSlug && typeMap.get(rawSlug)))
+      : null;
+
+    if (mappedType) {
+      kind = /serie|anime/i.test(mappedType) ? "series" : "movie";
+      if (!badges.includes(mappedType)) badges.unshift(mappedType);
+    } else if (/serie/i.test(body) || href.includes("/ver/series/")) {
       kind = "series";
     } else if (href.includes("/ver/anime/")) {
       kind = "series";
@@ -91,6 +103,7 @@ export function parseCards(html, defaultKind = "movie") {
       rating,
       year,
       badges: badges.slice(0, 3),
+      genres,
     });
   }
 

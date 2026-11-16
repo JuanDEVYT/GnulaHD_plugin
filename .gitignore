@@ -1,7 +1,5 @@
 node_modules/
-.kino-cookies.json
-.kino-storage.json
-.kino-notices.json
+.kino-*
 dist/
 *.log
 .DS_Store

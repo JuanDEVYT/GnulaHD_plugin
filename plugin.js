@@ -889,7 +889,7 @@ function hashCode(str) {
   }
   return hash;
 }
-function parseCards(html, defaultKind = "movie") {
+function parseCards(html, defaultKind = "movie", typeMap = null) {
   const cards = [];
   const cardRegex = /<a class="gnrd-card" href="([^"]+)" title="([^"]+)">([\s\S]*?)<\/a>/g;
   let match;
@@ -912,8 +912,14 @@ function parseCards(html, defaultKind = "movie") {
       const l = lm[1].trim();
       if (l && !badges.includes(l)) badges.push(l);
     }
+    const genreMatch = body.match(/class="gnrd-card-genres"[^>]*>([^<]+)<\//i);
+    const genres = genreMatch ? genreMatch[1].split(/[·,]/).map((s) => s.trim()).filter(Boolean).slice(0, 5) : [];
     let kind = defaultKind;
-    if (/serie/i.test(body) || href.includes("/ver/series/")) {
+    const mappedType = typeMap ? typeMap.get(href) || rawSlug && typeMap.get(rawSlug) : null;
+    if (mappedType) {
+      kind = /serie|anime/i.test(mappedType) ? "series" : "movie";
+      if (!badges.includes(mappedType)) badges.unshift(mappedType);
+    } else if (/serie/i.test(body) || href.includes("/ver/series/")) {
       kind = "series";
     } else if (href.includes("/ver/anime/")) {
       kind = "series";
@@ -929,7 +935,8 @@ function parseCards(html, defaultKind = "movie") {
       backdrop: "",
       rating,
       year,
-      badges: badges.slice(0, 3)
+      badges: badges.slice(0, 3),
+      genres
     });
   }
   return cards;
@@ -989,6 +996,17 @@ async function fetchHtml(url) {
     throw kino.error("unavailable", `Error de conexi\xF3n con GnulaHD (HTTP ${res.status})`);
   }
   return await res.text();
+}
+async function fetchJson(url, referer) {
+  const res = await kino.fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Referer: referer || BASE_URL + "/",
+      Accept: "application/json"
+    }
+  });
+  if (!res.ok) return null;
+  return await res.json();
 }
 async function resolveVidara(url) {
   const m = url.match(/(?:vidara\.[a-z]+|vidaraa\.[a-z]+)\/(?:e\/)?([A-Za-z0-9_-]+)/i);
@@ -1106,10 +1124,65 @@ function getBrowseApp() {
 }
 async function search(query) {
   const q = typeof query === "string" ? query : query && query.q || "";
-  if (!q.trim()) return { items: [] };
-  const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(q.trim())}`;
-  const html = await fetchHtml(searchUrl);
-  const items = parseCards(html);
+  const queryType = typeof query === "object" && query ? query.type : null;
+  const cleanQ = q.trim();
+  if (!cleanQ) return { items: [] };
+  const jsonUrl = `${BASE_URL}/wp-json/gnrd/v1/search?q=${encodeURIComponent(cleanQ)}`;
+  const htmlUrl = `${BASE_URL}/?s=${encodeURIComponent(cleanQ)}`;
+  const [jsonRes, htmlRes] = await Promise.allSettled([
+    fetchJson(jsonUrl),
+    fetchHtml(htmlUrl)
+  ]);
+  const typeMap = /* @__PURE__ */ new Map();
+  const jsonResults = jsonRes.status === "fulfilled" && jsonRes.value && Array.isArray(jsonRes.value.results) ? jsonRes.value.results : [];
+  for (const r of jsonResults) {
+    if (r.url && r.type) {
+      typeMap.set(r.url, r.type);
+      const m = r.url.match(/\/ver\/([^\/]+)/);
+      if (m) typeMap.set(m[1], r.type);
+    }
+  }
+  const defaultKind = queryType === "series" ? "series" : "movie";
+  let items = [];
+  if (htmlRes.status === "fulfilled" && htmlRes.value) {
+    items = parseCards(htmlRes.value, defaultKind, typeMap);
+  }
+  if (items.length === 0 && jsonResults.length > 0) {
+    items = jsonResults.map((r) => {
+      const slugMatch = r.url.match(/\/ver\/([^\/]+)/);
+      const rawSlug = slugMatch ? slugMatch[1] : r.url.replace(/^https?:\/\/[^\/]+\//, "");
+      const isSeries = /serie|anime/i.test(r.type || "") || queryType === "series";
+      return {
+        id: cleanId(rawSlug),
+        ref: r.url,
+        title: r.title,
+        kind: isSeries ? "series" : "movie",
+        poster: r.img || "",
+        backdrop: "",
+        year: r.year ? String(r.year) : void 0,
+        badges: r.type ? [r.type] : []
+      };
+    });
+  } else if (items.length > 0 && jsonResults.length > 0) {
+    const existingRefs = new Set(items.map((i) => i.ref));
+    for (const r of jsonResults) {
+      if (!existingRefs.has(r.url)) {
+        const slugMatch = r.url.match(/\/ver\/([^\/]+)/);
+        const rawSlug = slugMatch ? slugMatch[1] : r.url.replace(/^https?:\/\/[^\/]+\//, "");
+        const isSeries = /serie|anime/i.test(r.type || "") || queryType === "series";
+        items.push({
+          id: cleanId(rawSlug),
+          ref: r.url,
+          title: r.title,
+          kind: isSeries ? "series" : "movie",
+          poster: r.img || "",
+          backdrop: "",
+          year: r.year ? String(r.year) : void 0,
+          badges: r.type ? [r.type] : []
+        });
+      }
+    }
+  }
   return { items };
 }
 async function home() {
