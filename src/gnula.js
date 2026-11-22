@@ -44,22 +44,30 @@ function hashCode(str) {
 
 export function parseCards(html, defaultKind = "movie", typeMap = null) {
   const cards = [];
-  const cardRegex = /<a class="gnrd-card" href="([^"]+)" title="([^"]+)">([\s\S]*?)<\/a>/g;
+  const cardRegex = /<a[^>]*class="[^"]*gnrd-card[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
   let match;
 
   while ((match = cardRegex.exec(html)) !== null) {
-    const href = match[1];
-    const title = match[2].trim();
-    const body = match[3];
+    const fullTag = match[0];
+    const body = match[1];
+
+    const hrefMatch = fullTag.match(/href="([^"]+)"/i);
+    if (!hrefMatch) continue;
+    const href = hrefMatch[1];
+
+    const titleAttr = fullTag.match(/title="([^"]+)"/i);
+    const titleTag = body.match(/class="gnrd-card-title"[^>]*>([^<]+)<\//i);
+    const title = (titleAttr ? titleAttr[1] : (titleTag ? titleTag[1] : "")).trim();
+    if (!title) continue;
 
     const slugMatch = href.match(/\/ver\/([^\/]+)/);
     const rawSlug = slugMatch ? slugMatch[1] : href.replace(/^https?:\/\/[^\/]+\//, "");
     const id = cleanId(rawSlug);
 
-    const imgMatch = body.match(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"/i);
+    const imgMatch = body.match(/<img[^>]+src="([^"]+)"/i);
     const poster = imgMatch ? imgMatch[1] : "";
 
-    const ratingMatch = body.match(/class="gnrd-rating"[^>]*>★?\s*([0-9.]+)/i);
+    const ratingMatch = body.match(/class="(?:gnrd-rating|gnrd-cm-rating)"[^>]*>★?\s*([0-9.]+)/i);
     const rating = ratingMatch ? parseFloat(ratingMatch[1]) : undefined;
 
     const yearMatch = body.match(/<span>(\b(19\d\d|20\d\d)\b)<\/span>/);
@@ -199,16 +207,17 @@ export async function resolveVidara(url) {
     const res = await kino.fetch("https://vidara.to/api/stream", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         "User-Agent": USER_AGENT,
         Referer: `https://vidara.to/e/${filecode}`,
         Origin: "https://vidara.to",
       },
-      body: JSON.stringify({
-        filecode,
-        device: "desktop",
-        codecs: ["h264", "aac"],
-      }),
+      body: {
+        json: {
+          filecode,
+          device: "desktop",
+          codecs: ["h264", "aac"],
+        },
+      },
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -231,16 +240,21 @@ export async function resolveSavefiles(url) {
   if (!m) return null;
   const filecode = m[1];
   try {
-    const bodyStr = `op=embed&file_code=${encodeURIComponent(filecode)}&auto=1&referer=${encodeURIComponent(BASE_URL + "/")}`;
     const res = await kino.fetch("https://savefiles.com/dl", {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": USER_AGENT,
         Referer: `https://savefiles.com/e/${filecode}`,
         Origin: "https://savefiles.com",
       },
-      body: bodyStr,
+      body: {
+        form: {
+          op: "embed",
+          file_code: filecode,
+          auto: "1",
+          referer: BASE_URL + "/",
+        },
+      },
     });
     if (!res.ok) return null;
     const html = await res.text();
@@ -269,21 +283,32 @@ export async function getPlayerPayload(ref) {
     tok = u.searchParams.get("t");
   } catch (_) {}
 
-  if (!pid || !tok) {
-    const html = await fetchHtml(ref);
-    const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
-    const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
-    if (pidMatch && tokMatch) {
-      pid = pidMatch[1];
-      tok = tokMatch[1];
+  if (pid && tok) {
+    const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
+    const data = await fetchJson(apiUrl, ref);
+    if (data && data.p) {
+      const payload = gnrdUnpack(data.p);
+      if (payload && Array.isArray(payload.langs) && payload.langs.length > 0) {
+        return payload;
+      }
     }
   }
 
-  if (!pid || !tok) return null;
+  const cleanUrl = ref.split("?")[0];
+  const html = await fetchHtml(cleanUrl);
+  if (!html) return null;
 
-  const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
-  const data = await fetchJson(apiUrl, ref);
-  if (!data || !data.p) return null;
+  const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
+  const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
+  if (pidMatch && tokMatch) {
+    const freshPid = pidMatch[1];
+    const freshTok = tokMatch[1];
+    const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${freshPid}&t=${encodeURIComponent(freshTok)}`;
+    const data = await fetchJson(apiUrl, cleanUrl);
+    if (data && data.p) {
+      return gnrdUnpack(data.p);
+    }
+  }
 
-  return gnrdUnpack(data.p);
+  return null;
 }

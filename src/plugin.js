@@ -1,4 +1,4 @@
-// Plugin principal de GnulaHD para Kino (v8.0.1)
+// Plugin principal de GnulaHD para Kino (v8.1.0)
 import { makeBrowse } from "./browse/index.js";
 import {
   BASE_URL,
@@ -8,6 +8,7 @@ import {
   parseCards,
   parseHeroSlides,
   gnrdUnpack,
+  getPlayerPayload,
   resolveVidara,
   resolveSavefiles
 } from "./gnula.js";
@@ -230,7 +231,8 @@ export async function browse(ref, cursor) {
 }
 
 export async function episodes(ref) {
-  const html = await fetchHtml(ref);
+  const cleanUrl = ref.split("?")[0];
+  const html = await fetchHtml(cleanUrl);
   const seriesTitle = (html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "").replace(/<[^>]+>/g, "").trim() || "GnulaHD Series";
 
   const cardRegex = /<a[^>]*class="[^"]*gnrd-epc[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
@@ -280,45 +282,71 @@ export async function episodes(ref) {
   };
 }
 
-export async function resolve(ref) {
-  let pid = null;
-  let tok = null;
-
+async function resolveSingleServer(src, referer) {
+  // 1. Primary: Kino Resolver via kino.plugins.call
   try {
-    const u = new URL(ref);
-    pid = u.searchParams.get("id");
-    tok = u.searchParams.get("t");
-  } catch (_) {}
-
-  if (!pid || !tok) {
-    const html = await fetchHtml(ref);
-    const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
-    const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
-    if (pidMatch) pid = pidMatch[1];
-    if (tokMatch) tok = tokMatch[1];
+    if (typeof kino !== "undefined" && kino.plugins && typeof kino.plugins.call === "function") {
+      const res = await kino.plugins.call("resolver", "resolve", { url: src, referer });
+      if (res && Array.isArray(res.streams) && res.streams.length > 0) {
+        const stream = res.streams[0];
+        const headers = {};
+        if (stream.referer) headers.Referer = stream.referer;
+        if (Array.isArray(stream.headers)) {
+          for (const h of stream.headers) {
+            if (h && h.name) headers[h.name] = String(h.value);
+          }
+        }
+        return {
+          url: stream.url,
+          mime: stream.kind === "hls" ? "application/x-mpegURL" : (stream.kind === "mp4" ? "video/mp4" : "application/x-mpegURL"),
+          headers: Object.keys(headers).length > 0 ? headers : undefined,
+          serverName: stream.server
+        };
+      }
+    }
+  } catch (_) {
+    // If provider is missing or fails, continue to fallback
   }
 
-  if (!pid || !tok) {
-    throw typeof kino !== "undefined" && kino.error
-      ? kino.error("unavailable", "No se encontró el reproductor para este contenido")
-      : new Error("No se encontró el reproductor de GnulaHD");
+  // 2. Fallback: Native extractors for Vidara and Savefiles
+  if (src.includes("vidara")) {
+    const res = await resolveVidara(src);
+    if (res) return { ...res, serverName: "Vidara" };
+  } else if (src.includes("savefiles")) {
+    const res = await resolveSavefiles(src);
+    if (res) return { ...res, serverName: "Savefiles" };
   }
 
-  const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
-  const res = await kino.fetch(apiUrl, { headers: { Referer: ref } });
-  const data = await res.json();
-
-  if (!data || !data.p) {
-    throw typeof kino !== "undefined" && kino.error
-      ? kino.error("unavailable", "Respuesta inválida del reproductor de GnulaHD")
-      : new Error("Respuesta vacía del reproductor");
+  // 3. Fallback: Browser capture if available in Kino app
+  if (typeof kino !== "undefined" && kino.browser && typeof kino.browser.capture === "function") {
+    try {
+      const page = await kino.browser.capture(src, {
+        timeoutMs: 15000,
+        match: "\\.m3u8|\\.mp4",
+        headers: { Referer: referer }
+      });
+      const best = (page?.media || []).find((m) => /m3u8/i.test(m.url)) || page?.media?.[0];
+      if (best && best.url) {
+        return {
+          url: best.url,
+          mime: best.mime || (best.url.includes(".mp4") ? "video/mp4" : "application/x-mpegURL"),
+          headers: best.headers || { Referer: src },
+          serverName: "Web Player"
+        };
+      }
+    } catch (_) {}
   }
 
-  const unpacked = gnrdUnpack(data.p);
-  if (!unpacked || !Array.isArray(unpacked.langs)) {
+  return null;
+}
+
+export async function resolve(ref) {
+  const unpacked = await getPlayerPayload(ref);
+
+  if (!unpacked || !Array.isArray(unpacked.langs) || unpacked.langs.length === 0) {
     throw typeof kino !== "undefined" && kino.error
-      ? kino.error("unavailable", "No se pudieron descifrar los servidores")
-      : new Error("No se pudieron descifrar los servidores");
+      ? kino.error("unavailable", "No hay servidores disponibles para reproducir")
+      : new Error("No hay servidores de video disponibles");
   }
 
   const preferred = (typeof kino !== "undefined" && kino.config && kino.config.get("preferredLang")) || "latino";
@@ -334,50 +362,78 @@ export async function resolve(ref) {
     return 0;
   });
 
-  const alternatives = [];
-  let directStream = null;
+  const langFlags = {
+    latino: "🇲🇽 Latino",
+    castellano: "🇪🇸 Castellano",
+    subtitulado: "🇺🇸 Subtitulado"
+  };
 
+  const tasks = [];
   for (const l of sortedLangs) {
     if (!Array.isArray(l.servers)) continue;
-    for (const s of l.servers) {
+    const rawLang = (l.label || "").toLowerCase();
+    let langLabel = l.label || "Audio";
+    if (rawLang.includes("lat")) langLabel = langFlags.latino;
+    else if (rawLang.includes("cast") || rawLang.includes("esp")) langLabel = langFlags.castellano;
+    else if (rawLang.includes("sub")) langLabel = langFlags.subtitulado;
+
+    for (let i = 0; i < l.servers.length; i++) {
+      const s = l.servers[i];
       const src = s.src || "";
       if (!src) continue;
-      if (src.includes("vidara")) {
-        const streamObj = await resolveVidara(src);
-        if (streamObj && !directStream) {
-          directStream = streamObj;
-        } else if (streamObj) {
-          alternatives.push({
-            name: `${s.title || "Vidara"} (${l.label || "Video"})`,
-            url: streamObj.url,
-            mime: streamObj.mime
-          });
-        }
-      } else if (src.includes("savefiles")) {
-        const streamObj = await resolveSavefiles(src);
-        if (streamObj && !directStream) {
-          directStream = streamObj;
-        } else if (streamObj) {
-          alternatives.push({
-            name: `${s.title || "Savefiles"} (${l.label || "Video"})`,
-            url: streamObj.url,
-            mime: streamObj.mime
-          });
-        }
-      }
+      tasks.push({
+        src,
+        title: s.title || `Servidor ${i + 1}`,
+        langLabel,
+        referer: ref
+      });
     }
   }
 
-  if (directStream) {
-    return {
-      ...directStream,
-      alternatives: alternatives.length > 0 ? alternatives : undefined
-    };
+  if (tasks.length === 0) {
+    throw typeof kino !== "undefined" && kino.error
+      ? kino.error("unavailable", "No hay servidores disponibles para reproducir")
+      : new Error("No hay servidores disponibles");
   }
 
-  throw typeof kino !== "undefined" && kino.error
-    ? kino.error("unavailable", "No hay servidores disponibles para reproducir")
-    : new Error("No hay servidores de video reproducibles disponibles");
+  // Paralelización con Promise.allSettled
+  const results = await Promise.allSettled(
+    tasks.map(async (t) => {
+      const resolved = await resolveSingleServer(t.src, t.referer);
+      if (!resolved || !resolved.url) return null;
+      return {
+        ...resolved,
+        label: `${resolved.serverName || t.title} (${t.langLabel})`
+      };
+    })
+  );
+
+  const successful = results
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => r.value);
+
+  if (successful.length === 0) {
+    throw typeof kino !== "undefined" && kino.error
+      ? kino.error("unavailable", "No se pudo reproducir ningún servidor disponible")
+      : new Error("No se pudo resolver ningún servidor");
+  }
+
+  const primary = successful[0];
+  const alternatives = successful.slice(1).map((s) => ({
+    name: s.label,
+    url: s.url,
+    mime: s.mime,
+    headers: s.headers
+  }));
+
+  const resObj = {
+    url: primary.url,
+    mime: primary.mime
+  };
+  if (primary.headers) resObj.headers = primary.headers;
+  if (alternatives.length > 0) resObj.alternatives = alternatives;
+
+  return resObj;
 }
 
 export async function categories() {

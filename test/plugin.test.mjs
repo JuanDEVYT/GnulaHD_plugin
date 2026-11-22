@@ -73,6 +73,16 @@ test("resolve gives a playable m3u8 stream", () => {
   assert.equal(data.mime, "application/x-mpegURL");
 });
 
+test("resolve integrates with kino-resolver provider seamlessly", () => {
+  const raw = execFileSync("node", ["sdk/run.mjs", "--provider", "../kino-resolver-repo", ".", "resolve", "https://ww3.gnulahd.nu/ver/el-despertar/"], {
+    encoding: "utf-8"
+  });
+  const data = JSON.parse(raw);
+  assert.ok(data.url);
+  assert.match(data.url, /\.m3u8/);
+  assert.equal(data.mime, "application/x-mpegURL");
+});
+
 test("screen produces declarative scaffold UI", () => {
   const raw = execFileSync("node", ["sdk/run.mjs", ".", "screen"], {
     encoding: "utf-8"

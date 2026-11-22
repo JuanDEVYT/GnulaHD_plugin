@@ -891,18 +891,24 @@ function hashCode(str) {
 }
 function parseCards(html, defaultKind = "movie", typeMap = null) {
   const cards = [];
-  const cardRegex = /<a class="gnrd-card" href="([^"]+)" title="([^"]+)">([\s\S]*?)<\/a>/g;
+  const cardRegex = /<a[^>]*class="[^"]*gnrd-card[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = cardRegex.exec(html)) !== null) {
-    const href = match[1];
-    const title = match[2].trim();
-    const body = match[3];
+    const fullTag = match[0];
+    const body = match[1];
+    const hrefMatch = fullTag.match(/href="([^"]+)"/i);
+    if (!hrefMatch) continue;
+    const href = hrefMatch[1];
+    const titleAttr = fullTag.match(/title="([^"]+)"/i);
+    const titleTag = body.match(/class="gnrd-card-title"[^>]*>([^<]+)<\//i);
+    const title = (titleAttr ? titleAttr[1] : titleTag ? titleTag[1] : "").trim();
+    if (!title) continue;
     const slugMatch = href.match(/\/ver\/([^\/]+)/);
     const rawSlug = slugMatch ? slugMatch[1] : href.replace(/^https?:\/\/[^\/]+\//, "");
     const id = cleanId(rawSlug);
-    const imgMatch = body.match(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"/i);
+    const imgMatch = body.match(/<img[^>]+src="([^"]+)"/i);
     const poster = imgMatch ? imgMatch[1] : "";
-    const ratingMatch = body.match(/class="gnrd-rating"[^>]*>★?\s*([0-9.]+)/i);
+    const ratingMatch = body.match(/class="(?:gnrd-rating|gnrd-cm-rating)"[^>]*>★?\s*([0-9.]+)/i);
     const rating = ratingMatch ? parseFloat(ratingMatch[1]) : void 0;
     const yearMatch = body.match(/<span>(\b(19\d\d|20\d\d)\b)<\/span>/);
     const year = yearMatch ? yearMatch[1] : void 0;
@@ -1016,16 +1022,17 @@ async function resolveVidara(url) {
     const res = await kino.fetch("https://vidara.to/api/stream", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         "User-Agent": USER_AGENT,
         Referer: `https://vidara.to/e/${filecode}`,
         Origin: "https://vidara.to"
       },
-      body: JSON.stringify({
-        filecode,
-        device: "desktop",
-        codecs: ["h264", "aac"]
-      })
+      body: {
+        json: {
+          filecode,
+          device: "desktop",
+          codecs: ["h264", "aac"]
+        }
+      }
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -1048,16 +1055,21 @@ async function resolveSavefiles(url) {
   if (!m) return null;
   const filecode = m[1];
   try {
-    const bodyStr = `op=embed&file_code=${encodeURIComponent(filecode)}&auto=1&referer=${encodeURIComponent(BASE_URL + "/")}`;
     const res = await kino.fetch("https://savefiles.com/dl", {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": USER_AGENT,
         Referer: `https://savefiles.com/e/${filecode}`,
         Origin: "https://savefiles.com"
       },
-      body: bodyStr
+      body: {
+        form: {
+          op: "embed",
+          file_code: filecode,
+          auto: "1",
+          referer: BASE_URL + "/"
+        }
+      }
     });
     if (!res.ok) return null;
     const html = await res.text();
@@ -1073,6 +1085,41 @@ async function resolveSavefiles(url) {
       };
     }
   } catch (_) {
+  }
+  return null;
+}
+async function getPlayerPayload(ref) {
+  let pid = null;
+  let tok = null;
+  try {
+    const u = new URL(ref);
+    pid = u.searchParams.get("id");
+    tok = u.searchParams.get("t");
+  } catch (_) {
+  }
+  if (pid && tok) {
+    const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
+    const data = await fetchJson(apiUrl, ref);
+    if (data && data.p) {
+      const payload = gnrdUnpack(data.p);
+      if (payload && Array.isArray(payload.langs) && payload.langs.length > 0) {
+        return payload;
+      }
+    }
+  }
+  const cleanUrl = ref.split("?")[0];
+  const html = await fetchHtml(cleanUrl);
+  if (!html) return null;
+  const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
+  const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
+  if (pidMatch && tokMatch) {
+    const freshPid = pidMatch[1];
+    const freshTok = tokMatch[1];
+    const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${freshPid}&t=${encodeURIComponent(freshTok)}`;
+    const data = await fetchJson(apiUrl, cleanUrl);
+    if (data && data.p) {
+      return gnrdUnpack(data.p);
+    }
   }
   return null;
 }
@@ -1276,7 +1323,8 @@ async function browse(ref, cursor) {
   };
 }
 async function episodes(ref) {
-  const html = await fetchHtml(ref);
+  const cleanUrl = ref.split("?")[0];
+  const html = await fetchHtml(cleanUrl);
   const seriesTitle = (html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "").replace(/<[^>]+>/g, "").trim() || "GnulaHD Series";
   const cardRegex = /<a[^>]*class="[^"]*gnrd-epc[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
   const episodes2 = [];
@@ -1314,34 +1362,61 @@ async function episodes(ref) {
     episodes: episodes2
   };
 }
-async function resolve(ref) {
-  let pid = null;
-  let tok = null;
+async function resolveSingleServer(src, referer) {
   try {
-    const u = new URL(ref);
-    pid = u.searchParams.get("id");
-    tok = u.searchParams.get("t");
+    if (typeof kino !== "undefined" && kino.plugins && typeof kino.plugins.call === "function") {
+      const res = await kino.plugins.call("resolver", "resolve", { url: src, referer });
+      if (res && Array.isArray(res.streams) && res.streams.length > 0) {
+        const stream = res.streams[0];
+        const headers = {};
+        if (stream.referer) headers.Referer = stream.referer;
+        if (Array.isArray(stream.headers)) {
+          for (const h of stream.headers) {
+            if (h && h.name) headers[h.name] = String(h.value);
+          }
+        }
+        return {
+          url: stream.url,
+          mime: stream.kind === "hls" ? "application/x-mpegURL" : stream.kind === "mp4" ? "video/mp4" : "application/x-mpegURL",
+          headers: Object.keys(headers).length > 0 ? headers : void 0,
+          serverName: stream.server
+        };
+      }
+    }
   } catch (_) {
   }
-  if (!pid || !tok) {
-    const html = await fetchHtml(ref);
-    const pidMatch = html.match(/_gnrdPid\s*=\s*(\d+)/);
-    const tokMatch = html.match(/_gnrdTok\s*=\s*"([^"]+)"/);
-    if (pidMatch) pid = pidMatch[1];
-    if (tokMatch) tok = tokMatch[1];
+  if (src.includes("vidara")) {
+    const res = await resolveVidara(src);
+    if (res) return { ...res, serverName: "Vidara" };
+  } else if (src.includes("savefiles")) {
+    const res = await resolveSavefiles(src);
+    if (res) return { ...res, serverName: "Savefiles" };
   }
-  if (!pid || !tok) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No se encontr\xF3 el reproductor para este contenido") : new Error("No se encontr\xF3 el reproductor de GnulaHD");
+  if (typeof kino !== "undefined" && kino.browser && typeof kino.browser.capture === "function") {
+    try {
+      const page = await kino.browser.capture(src, {
+        timeoutMs: 15e3,
+        match: "\\.m3u8|\\.mp4",
+        headers: { Referer: referer }
+      });
+      const best = (page?.media || []).find((m) => /m3u8/i.test(m.url)) || page?.media?.[0];
+      if (best && best.url) {
+        return {
+          url: best.url,
+          mime: best.mime || (best.url.includes(".mp4") ? "video/mp4" : "application/x-mpegURL"),
+          headers: best.headers || { Referer: src },
+          serverName: "Web Player"
+        };
+      }
+    } catch (_) {
+    }
   }
-  const apiUrl = `${BASE_URL}/wp-json/gnrd/v1/player?id=${pid}&t=${encodeURIComponent(tok)}`;
-  const res = await kino.fetch(apiUrl, { headers: { Referer: ref } });
-  const data = await res.json();
-  if (!data || !data.p) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "Respuesta inv\xE1lida del reproductor de GnulaHD") : new Error("Respuesta vac\xEDa del reproductor");
-  }
-  const unpacked = gnrdUnpack(data.p);
-  if (!unpacked || !Array.isArray(unpacked.langs)) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No se pudieron descifrar los servidores") : new Error("No se pudieron descifrar los servidores");
+  return null;
+}
+async function resolve(ref) {
+  const unpacked = await getPlayerPayload(ref);
+  if (!unpacked || !Array.isArray(unpacked.langs) || unpacked.langs.length === 0) {
+    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No hay servidores disponibles para reproducir") : new Error("No hay servidores de video disponibles");
   }
   const preferred = typeof kino !== "undefined" && kino.config && kino.config.get("preferredLang") || "latino";
   const sortedLangs = [...unpacked.langs].sort((a, b) => {
@@ -1355,45 +1430,62 @@ async function resolve(ref) {
     if (preferred === "subtitulado" && bLabel.includes("sub")) return 1;
     return 0;
   });
-  const alternatives = [];
-  let directStream = null;
+  const langFlags = {
+    latino: "\u{1F1F2}\u{1F1FD} Latino",
+    castellano: "\u{1F1EA}\u{1F1F8} Castellano",
+    subtitulado: "\u{1F1FA}\u{1F1F8} Subtitulado"
+  };
+  const tasks = [];
   for (const l of sortedLangs) {
     if (!Array.isArray(l.servers)) continue;
-    for (const s of l.servers) {
+    const rawLang = (l.label || "").toLowerCase();
+    let langLabel = l.label || "Audio";
+    if (rawLang.includes("lat")) langLabel = langFlags.latino;
+    else if (rawLang.includes("cast") || rawLang.includes("esp")) langLabel = langFlags.castellano;
+    else if (rawLang.includes("sub")) langLabel = langFlags.subtitulado;
+    for (let i = 0; i < l.servers.length; i++) {
+      const s = l.servers[i];
       const src = s.src || "";
       if (!src) continue;
-      if (src.includes("vidara")) {
-        const streamObj = await resolveVidara(src);
-        if (streamObj && !directStream) {
-          directStream = streamObj;
-        } else if (streamObj) {
-          alternatives.push({
-            name: `${s.title || "Vidara"} (${l.label || "Video"})`,
-            url: streamObj.url,
-            mime: streamObj.mime
-          });
-        }
-      } else if (src.includes("savefiles")) {
-        const streamObj = await resolveSavefiles(src);
-        if (streamObj && !directStream) {
-          directStream = streamObj;
-        } else if (streamObj) {
-          alternatives.push({
-            name: `${s.title || "Savefiles"} (${l.label || "Video"})`,
-            url: streamObj.url,
-            mime: streamObj.mime
-          });
-        }
-      }
+      tasks.push({
+        src,
+        title: s.title || `Servidor ${i + 1}`,
+        langLabel,
+        referer: ref
+      });
     }
   }
-  if (directStream) {
-    return {
-      ...directStream,
-      alternatives: alternatives.length > 0 ? alternatives : void 0
-    };
+  if (tasks.length === 0) {
+    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No hay servidores disponibles para reproducir") : new Error("No hay servidores disponibles");
   }
-  throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No hay servidores disponibles para reproducir") : new Error("No hay servidores de video reproducibles disponibles");
+  const results = await Promise.allSettled(
+    tasks.map(async (t) => {
+      const resolved = await resolveSingleServer(t.src, t.referer);
+      if (!resolved || !resolved.url) return null;
+      return {
+        ...resolved,
+        label: `${resolved.serverName || t.title} (${t.langLabel})`
+      };
+    })
+  );
+  const successful = results.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
+  if (successful.length === 0) {
+    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No se pudo reproducir ning\xFAn servidor disponible") : new Error("No se pudo resolver ning\xFAn servidor");
+  }
+  const primary = successful[0];
+  const alternatives = successful.slice(1).map((s) => ({
+    name: s.label,
+    url: s.url,
+    mime: s.mime,
+    headers: s.headers
+  }));
+  const resObj = {
+    url: primary.url,
+    mime: primary.mime
+  };
+  if (primary.headers) resObj.headers = primary.headers;
+  if (alternatives.length > 0) resObj.alternatives = alternatives;
+  return resObj;
 }
 async function categories() {
   return [
