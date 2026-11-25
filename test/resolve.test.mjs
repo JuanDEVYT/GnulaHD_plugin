@@ -24,12 +24,13 @@ let payload = { langs: [] };
 let streamsPorSrc = {};
 let needsBrowser = {};
 let media = [];
+let hlsMuerto = false;   // el CDN empieza a contestar 404 (token caducado)
 
 globalThis.kino = {
   fetch: async (url, opts = {}) => {
     fetchCalls.push(String(url));
     if (String(url).includes("/wp-json/gnrd/v1/player")) return respuesta(JSON.stringify({ p: pack(payload) }));
-    if (/\.m3u8/.test(String(url))) return respuesta("#EXTM3U\n#EXTINF:10,\nseg1.ts\n#EXTINF:10,\nseg2.ts\n");
+    if (/\.m3u8/.test(String(url))) return hlsMuerto ? { ok: false, status: 404, text: async () => "" } : respuesta("#EXTM3U\n#EXTINF:10,\nseg1.ts\n#EXTINF:10,\nseg2.ts\n");
     if (/\.mp4/.test(String(url))) return respuesta("video");
     return respuesta("<html></html>");
   },
@@ -135,6 +136,23 @@ test("resolve: el navegador oculto no devuelve el anuncio de media[0]", async ()
   const out = await plugin.resolve(REF);
   assert.equal(out.url, "https://cdn.example/pelicula.m3u8");
   assert.doesNotMatch(out.url, /ads/);
+});
+
+test("resolve: un enlace guardado que ya da 404 no se sirve", async () => {
+  payload = { langs: [{ label: "Latino", servers: [{ src: "https://vidara.to/e/uno", title: "Vidara" }] }] };
+  streamsPorSrc = { "https://vidara.to/e/uno": "https://cdn.example/master.m3u8" };
+  const uno = await plugin.resolve(REF);
+  assert.ok(uno.url);
+  hlsMuerto = true;
+  try {
+    await assert.rejects(() => plugin.resolve(REF), (e) => {
+      assert.match(String(e.userMessage || ""), /No se encontró una copia|no está disponible/);
+      return true;
+    });
+    assert.equal(globalThis.kino.storage.keys().some((k) => k.indexOf("ok:") === 0), false, "la caché muerta se borra");
+  } finally {
+    hlsMuerto = false;
+  }
 });
 
 test("prepare deja el enlace listo y resolve lo usa", async () => {

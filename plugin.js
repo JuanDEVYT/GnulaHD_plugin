@@ -1403,7 +1403,8 @@ async function listaSana(url, headers, hasta) {
   const pide = { headers: { "User-Agent": UA, ...(headers || {}) }, timeoutMs: Math.max(1500, Math.min(6000, restante(hasta || Date.now() + 6000))) };
   try {
     const r = await kino.fetch(url, pide);
-    if (!r.ok) return true;
+    // Un 4xx (404, 410) es un enlace muerto; un 5xx o un fallo de red se perdonan.
+    if (!r.ok) return Number(r.status) >= 500;
     const txt = await r.text();
     if (txt.indexOf("#EXTM3U") < 0) return false;
     const lineas = txt.split("\n").filter((l) => l && l.charAt(0) !== "#");
@@ -1414,6 +1415,13 @@ async function listaSana(url, headers, hasta) {
     const vt = await v.text();
     return vt.indexOf("#EXTM3U") >= 0;
   } catch (_) { return true; }
+}
+
+/** ¿El manifiesto sigue vivo? Un 404 descubierto por Kino cuesta 10 s y un reintento por copia. */
+async function manifiestoVivo(url, headers, hasta) {
+  if (!esManifiesto(url)) return true;
+  if (restante(hasta) < 3000) return true;
+  return listaSana(url, headers, hasta);
 }
 
 /** El stream del motor en la forma de Kino: kind→mime, headers (lista u objeto) y subtítulos. */
@@ -1557,7 +1565,7 @@ async function primerasCopias(servidores, watchRef, hasta, limite) {
       const s = cola[i++];
       if (restante(hasta) < 1200) return;
       const r = await intentaServidor(s, watchRef, hasta, true);
-      if (r && r.url && !pareceAnuncio(r.url)) {
+      if (r && r.url && !pareceAnuncio(r.url) && await manifiestoVivo(r.url, r.headers, hasta)) {
         out.push({ ...r, orden: s.i, etiqueta: `${s.langLabel} · ${s.titulo}` });
         if (out.length >= 2) return;
       }
@@ -1625,7 +1633,9 @@ async function resolve(ref) {
   const guardado = cacheGet(claveOk(ref));
   if (guardado && typeof guardado.url === "string" && Date.now() - (guardado.at || 0) < CACHE_OK) {
     if (!esManifiesto(guardado.url) || await listaSana(guardado.url, guardado.headers, Date.now() + 4000)) {
-      return armaSalida({ ...guardado, etiqueta: guardado.label });
+      // Las copias ya resueltas caducan con su token: solo viajan las diferidas.
+      const copias = (Array.isArray(guardado.alternatives) ? guardado.alternatives : []).filter((a) => a && typeof a.ref === "string");
+      return armaSalida({ ...guardado, etiqueta: guardado.label, alternatives: copias });
     }
     try { kino.storage.remove(claveOk(ref)); } catch (_) { /* sigue */ }
   }
