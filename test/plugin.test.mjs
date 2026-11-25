@@ -74,7 +74,7 @@ test("resolve gives a playable m3u8 stream", () => {
 });
 
 test("resolve integrates with kino-resolver provider seamlessly", () => {
-  const raw = execFileSync("node", ["sdk/run.mjs", "--provider", "../kino-resolver-repo", ".", "resolve", "https://ww3.gnulahd.nu/ver/el-despertar/"], {
+  const raw = execFileSync("node", ["sdk/run.mjs", "--provider", "../../analysis/kino-plugin-kino-resolver", ".", "resolve", "https://ww3.gnulahd.nu/ver/el-despertar/"], {
     encoding: "utf-8"
   });
   const data = JSON.parse(raw);

@@ -147,6 +147,19 @@ var tabBar = (active) => ({
   onChanged: "tab",
   tabs: TAB_IDS.map((id) => ({ value: id, ...twin(TAB_KEYS[id], "label") }))
 });
+// La barra inferior (como Xuper): 5 destinos, los 4 del catálogo y Ajustes.
+var navBar = (active) => ({
+  type: "NavigationBar",
+  value: active,
+  onChanged: "nav",
+  items: [
+    { key: "inicio", icon: "home", ...twin("tabHome", "label") },
+    { key: "peliculas", icon: "movie", ...twin("tabMovies", "label") },
+    { key: "series", icon: "tv", ...twin("tabSeries", "label") },
+    { key: "anime", icon: "star", ...twin("tabAnime", "label") },
+    { key: "ajustes", icon: "settings", ...twin("brSettings", "label") }
+  ]
+});
 var railSkeleton = (n) => ({
   type: "Column",
   key: "skel" + n,
@@ -219,6 +232,14 @@ function browseView({ tab, data, recent, pending, failed, device = "phone" }) {
     ...twin("brSettings", "tooltip"),
     onPressed: { event: "go", arg: "settings" }
   };
+  const searchBtn = {
+    type: "IconButton",
+    key: "searchButton",
+    icon: "search",
+    ...twin("brSearch", "labelText"),
+    ...twin("brSearch", "tooltip"),
+    onPressed: "openSearch"
+  };
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
   if (data) {
@@ -257,17 +278,7 @@ function browseView({ tab, data, recent, pending, failed, device = "phone" }) {
         ...twin("brClose", "tooltip"),
         onPressed: { go: { close: true } }
       },
-      actions: tv ? [
-        {
-          type: "IconButton",
-          key: "searchButton",
-          icon: "search",
-          ...twin("brSearch", "labelText"),
-          ...twin("brSearch", "tooltip"),
-          onPressed: "openSearch"
-        },
-        gear
-      ] : [gear],
+      actions: [searchBtn, gear],
       title: tv ? {
         type: "Row",
         key: "titleRow",
@@ -276,27 +287,11 @@ function browseView({ tab, data, recent, pending, failed, device = "phone" }) {
         children: [logo(), tabBar(active)]
       } : logo()
     },
-    ...tv ? {} : {
-      floatingActionButton: {
-        type: "FloatingActionButton",
-        key: "searchFab",
-        icon: "search",
-        ...twin("brSearch", "tooltip"),
-        onPressed: "openSearch"
-      }
-    },
+    ...(tv ? {} : { bottomNavigationBar: navBar(active) }),
     body: {
       type: "Column",
       key: "page",
       children: [
-        ...tv ? [] : [
-          {
-            type: "Column",
-            key: "tabsRow",
-            padding: { compact: 0, expanded: 24 },
-            children: [tabBar(active)]
-          }
-        ],
         {
           type: "SingleChildScrollView",
           key: "browse-" + active,
@@ -718,7 +713,11 @@ function makeBrowse({ kino: kino2, loadTab, searchTitles }) {
   }
   function view(ctx) {
     const st = ctx.state && typeof ctx.state === "object" ? ctx.state : {};
-    if (ctx.route && ctx.route.name === "settings") return settingsView();
+    if (ctx.route && ctx.route.name === "settings") {
+      const v = settingsView();
+      if (ctx.device !== "tv") v.bottomNavigationBar = navBar("ajustes");
+      return v;
+    }
     if (ctx.route && ctx.route.name === "search") {
       const query = typeof st.sq === "string" ? st.sq : "";
       const items = found && found.q === query ? found.items : null;
@@ -772,6 +771,11 @@ function makeBrowse({ kino: kino2, loadTab, searchTitles }) {
       delete failed[tab];
       const pending = [tab, ...Array.isArray(state.pending) ? state.pending.filter((t) => t !== tab) : []];
       return { state: { tab, pending: memo.get(tab) && memo.get(tab).whole ? pending.slice(1) : pending, failed } };
+    },
+    nav({ value, arg, state, route }) {
+      const key = String(value || arg || "");
+      if (key === "ajustes") return { route: { push: "settings" }, state: { fromBrowse: true } };
+      return events.tab({ value: key, arg: key, state, route });
     },
     retry({ state, device }) {
       const tab = TAB_IDS.includes(state.tab) ? state.tab : TAB_IDS[0];
@@ -1362,131 +1366,346 @@ async function episodes(ref) {
     episodes: episodes2
   };
 }
-async function resolveSingleServer(src, referer) {
-  try {
-    if (typeof kino !== "undefined" && kino.plugins && typeof kino.plugins.call === "function") {
-      const res = await kino.plugins.call("resolver", "resolve", { url: src, referer });
-      if (res && Array.isArray(res.streams) && res.streams.length > 0) {
-        const stream = res.streams[0];
-        const headers = {};
-        if (stream.referer) headers.Referer = stream.referer;
-        if (Array.isArray(stream.headers)) {
-          for (const h of stream.headers) {
-            if (h && h.name) headers[h.name] = String(h.value);
-          }
-        }
-        return {
-          url: stream.url,
-          mime: stream.kind === "hls" ? "application/x-mpegURL" : stream.kind === "mp4" ? "video/mp4" : "application/x-mpegURL",
-          headers: Object.keys(headers).length > 0 ? headers : void 0,
-          serverName: stream.server
-        };
-      }
-    }
-  } catch (_) {
-  }
-  if (src.includes("vidara")) {
-    const res = await resolveVidara(src);
-    if (res) return { ...res, serverName: "Vidara" };
-  } else if (src.includes("savefiles")) {
-    const res = await resolveSavefiles(src);
-    if (res) return { ...res, serverName: "Savefiles" };
-  }
-  if (typeof kino !== "undefined" && kino.browser && typeof kino.browser.capture === "function") {
-    try {
-      const page = await kino.browser.capture(src, {
-        timeoutMs: 15e3,
-        match: "\\.m3u8|\\.mp4",
-        headers: { Referer: referer }
-      });
-      const best = (page?.media || []).find((m) => /m3u8/i.test(m.url)) || page?.media?.[0];
-      if (best && best.url) {
-        return {
-          url: best.url,
-          mime: best.mime || (best.url.includes(".mp4") ? "video/mp4" : "application/x-mpegURL"),
-          headers: best.headers || { Referer: src },
-          serverName: "Web Player"
-        };
-      }
-    } catch (_) {
-    }
-  }
-  return null;
+// ──────────────────────────────────────────────────────────────
+// RESOLUCIÓN — Kino Resolver como motor, con presupuesto y copias alternativas
+// ──────────────────────────────────────────────────────────────
+const RESOLVE_MS = 18000;
+const RESOLVE_BROWSER_MS = 56000;
+const ATTEMPT_MS = 5200;          // un servidor que no contesta en esto ya no interesa
+const INTENTOS_MAX = 8;           // servidores que se prueban antes de rendirse
+const MAX_ALTERNATIVAS = 8;       // copias que Kino enseña en "Servidor y calidad"
+const CACHE_OK = 30 * 60 * 1000;  // un enlace que funcionó vale media hora
+const UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Safari/537.36";
+// Los CDN de anuncios no son la película: si aparece uno, se descarta.
+const ANUNCIO = /tiktokcdn|doubleclick|googlesyndication|adserver|popads|onclickads|propellerads|hilltopads|\/ads?\//i;
+
+const restante = (hasta) => Math.max(0, Number(hasta || 0) - Date.now());
+const pareceAnuncio = (url) => ANUNCIO.test(String(url || ""));
+const esManifiesto = (url) => /\.(m3u8|mpd)(\?|$)/i.test(String(url || ""));
+const puertaDisponible = () => {
+  try { return !!(typeof kino !== "undefined" && kino.plugins && typeof kino.plugins.call === "function"); } catch (_) { return false; }
+};
+
+// ── caché del último enlace bueno ──
+function cacheGet(key) {
+  try { const raw = kino.storage.get(key); return raw ? JSON.parse(raw) : null; } catch (_) { return null; }
 }
-async function resolve(ref) {
-  const unpacked = await getPlayerPayload(ref);
-  if (!unpacked || !Array.isArray(unpacked.langs) || unpacked.langs.length === 0) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No hay servidores disponibles para reproducir") : new Error("No hay servidores de video disponibles");
+function cacheSet(key, value, ttlMs) {
+  try { kino.storage.set(key, JSON.stringify(value), ttlMs ? { ttlMs } : void 0); } catch (_) { /* sin caché */ }
+}
+function cacheDrop(prefix) {
+  try { for (const k of kino.storage.keys()) if (k.indexOf(prefix) === 0) kino.storage.remove(k); } catch (_) { /* sin caché */ }
+}
+const claveOk = (ref) => "ok:" + String(ref);
+
+/** Una lista HLS que solo lleva anuncios o un VOD de 30 s no es la película. */
+async function listaSana(url, headers, hasta) {
+  const pide = { headers: { "User-Agent": UA, ...(headers || {}) }, timeoutMs: Math.max(1500, Math.min(6000, restante(hasta || Date.now() + 6000))) };
+  try {
+    const r = await kino.fetch(url, pide);
+    if (!r.ok) return true;
+    const txt = await r.text();
+    if (txt.indexOf("#EXTM3U") < 0) return false;
+    const lineas = txt.split("\n").filter((l) => l && l.charAt(0) !== "#");
+    if (txt.indexOf("#EXTINF") >= 0) return lineas.length >= 2;
+    if (!lineas[0]) return false;
+    const v = await kino.fetch(new URL(lineas[0], url).href, pide);
+    if (!v.ok) return false;
+    const vt = await v.text();
+    return vt.indexOf("#EXTM3U") >= 0;
+  } catch (_) { return true; }
+}
+
+/** El stream del motor en la forma de Kino: kind→mime, headers (lista u objeto) y subtítulos. */
+function streamDePuerta(res, referer, nombre) {
+  const lista = res && Array.isArray(res.streams) ? res.streams : [];
+  const elegido = lista.find((s) => s && s.url && (s.kind === "hls" || esManifiesto(s.url))) || lista.find((s) => s && s.url);
+  if (!elegido) return null;
+  const hls = elegido.kind === "hls" || esManifiesto(elegido.url);
+  const headers = { "User-Agent": UA };
+  if (elegido.referer || referer) headers.Referer = elegido.referer || referer;
+  if (Array.isArray(elegido.headers)) {
+    for (const h of elegido.headers) if (h && h.name) headers[h.name] = String(h.value);
+  } else if (elegido.headers && typeof elegido.headers === "object") {
+    for (const k of Object.keys(elegido.headers)) if (elegido.headers[k] != null) headers[k] = String(elegido.headers[k]);
   }
-  const preferred = typeof kino !== "undefined" && kino.config && kino.config.get("preferredLang") || "latino";
-  const sortedLangs = [...unpacked.langs].sort((a, b) => {
-    const aLabel = (a.label || "").toLowerCase();
-    const bLabel = (b.label || "").toLowerCase();
-    if (preferred === "latino" && aLabel.includes("lat")) return -1;
-    if (preferred === "latino" && bLabel.includes("lat")) return 1;
-    if (preferred === "castellano" && (aLabel.includes("cast") || aLabel.includes("esp"))) return -1;
-    if (preferred === "castellano" && (bLabel.includes("cast") || bLabel.includes("esp"))) return 1;
-    if (preferred === "subtitulado" && aLabel.includes("sub")) return -1;
-    if (preferred === "subtitulado" && bLabel.includes("sub")) return 1;
-    return 0;
-  });
-  const langFlags = {
+  const subs = (Array.isArray(res && res.subtitles) ? res.subtitles : [])
+    .filter((s) => s && typeof s.url === "string" && s.url)
+    .slice(0, 30)
+    .map((s) => ({ url: s.url, lang: (typeof s.lang === "string" && s.lang) || "und" }));
+  const out = {
+    url: elegido.url,
+    mime: hls ? "application/x-mpegURL" : (elegido.kind === "mp4" ? "video/mp4" : void 0),
+    headers,
+    servidor: elegido.server || nombre,
+  };
+  if (subs.length) out.subtitles = subs;
+  return out;
+}
+
+/** Los servidores ordenados por cómo reproduce de verdad cada hoster (llamada `rank` del motor). */
+async function ordenaConResolver(lista, hasta) {
+  if (lista.length < 2 || !puertaDisponible()) return lista;
+  try {
+    const r = await kino.plugins.call("resolver", "rank", { urls: lista.slice(0, 64).map((s) => s.src) });
+    const scores = r && Array.isArray(r.scores) ? r.scores : null;
+    if (!scores) return lista;
+    // -1 = no lo ofrezcas: el hoster está muerto o tiene una puerta imposible.
+    return lista
+      .map((s, i) => ({ s, i, score: typeof scores[i] === "number" ? scores[i] : 0 }))
+      .filter((x) => x.score >= 0)
+      .sort((a, b) => b.score - a.score || a.i - b.i)
+      .map((x) => x.s);
+  } catch (_) { return lista; }
+}
+
+/** Los servidores del payload del reproductor (lengua preferida primero). */
+function servidoresDe(payload) {
+  const preferida = String(kino.config.get("preferredLang") || "latino");
+  const flags = {
     latino: "\u{1F1F2}\u{1F1FD} Latino",
     castellano: "\u{1F1EA}\u{1F1F8} Castellano",
-    subtitulado: "\u{1F1FA}\u{1F1F8} Subtitulado"
+    subtitulado: "\u{1F1FA}\u{1F1F8} Subtitulado",
   };
-  const tasks = [];
-  for (const l of sortedLangs) {
-    if (!Array.isArray(l.servers)) continue;
-    const rawLang = (l.label || "").toLowerCase();
-    let langLabel = l.label || "Audio";
-    if (rawLang.includes("lat")) langLabel = langFlags.latino;
-    else if (rawLang.includes("cast") || rawLang.includes("esp")) langLabel = langFlags.castellano;
-    else if (rawLang.includes("sub")) langLabel = langFlags.subtitulado;
+  const peso = (l) => {
+    const s = String(l || "").toLowerCase();
+    if (preferida === "latino") return s.includes("lat") ? 0 : 1;
+    if (preferida === "castellano") return s.includes("cast") || s.includes("esp") ? 0 : 1;
+    if (preferida === "subtitulado") return s.includes("sub") ? 0 : 1;
+    return 0;
+  };
+  const langs = (payload && Array.isArray(payload.langs) ? payload.langs.slice() : [])
+    .sort((a, b) => peso(a && a.label) - peso(b && b.label));
+  const out = [];
+  for (const l of langs) {
+    if (!l || !Array.isArray(l.servers)) continue;
+    const raw = String(l.label || "").toLowerCase();
+    const langLabel = raw.includes("lat") ? flags.latino
+      : (raw.includes("cast") || raw.includes("esp")) ? flags.castellano
+        : raw.includes("sub") ? flags.subtitulado
+          : (l.label || "Audio");
     for (let i = 0; i < l.servers.length; i++) {
       const s = l.servers[i];
-      const src = s.src || "";
-      if (!src) continue;
-      tasks.push({
-        src,
-        title: s.title || `Servidor ${i + 1}`,
-        langLabel,
-        referer: ref
-      });
+      const src = s && s.src;
+      if (!src || pareceAnuncio(src)) continue;
+      out.push({ src, titulo: (s.title || `Servidor ${i + 1}`).slice(0, 60), langLabel, i });
     }
   }
-  if (tasks.length === 0) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No hay servidores disponibles para reproducir") : new Error("No hay servidores disponibles");
+  return out;
+}
+
+/** Un servidor concreto: motor → resolvedores propios → navegador oculto (último recurso). */
+async function intentaServidor(s, watchRef, hasta, permitirNavegador) {
+  const limite = Math.max(1200, Math.min(15000, restante(hasta)));
+
+  if (puertaDisponible()) {
+    try {
+      const res = await kino.plugins.call("resolver", "resolve", { url: s.src, referer: watchRef, timeoutMs: Math.min(limite, ATTEMPT_MS * 2) });
+      const stream = streamDePuerta(res, watchRef, s.titulo);
+      if (stream) return stream;
+      // El motor dice que este hoster necesita un navegador de verdad.
+      const pideNavegador = !!(res && Array.isArray(res.needs_browser) && res.needs_browser.length);
+      const muerto = !!(res && Array.isArray(res.dead) && res.dead.some((d) => String(d) === String(s.src) || (d && d.url === s.src)));
+      if (muerto) return null;
+      if (!pideNavegador) return null;
+    } catch (_) { /* se prueba por las bravas */ }
   }
-  const results = await Promise.allSettled(
-    tasks.map(async (t) => {
-      const resolved = await resolveSingleServer(t.src, t.referer);
-      if (!resolved || !resolved.url) return null;
-      return {
-        ...resolved,
-        label: `${resolved.serverName || t.title} (${t.langLabel})`
-      };
-    })
-  );
-  const successful = results.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
-  if (successful.length === 0) {
-    throw typeof kino !== "undefined" && kino.error ? kino.error("unavailable", "No se pudo reproducir ning\xFAn servidor disponible") : new Error("No se pudo resolver ning\xFAn servidor");
+
+  if (s.src.includes("vidara")) {
+    const res = await resolveVidara(s.src);
+    if (res && res.url) return { ...res, servidor: "Vidara" };
+  } else if (s.src.includes("savefiles")) {
+    const res = await resolveSavefiles(s.src);
+    if (res && res.url) return { ...res, servidor: "Savefiles" };
   }
-  const primary = successful[0];
-  const alternatives = successful.slice(1).map((s) => ({
-    name: s.label,
-    url: s.url,
-    mime: s.mime,
-    headers: s.headers
-  }));
-  const resObj = {
-    url: primary.url,
-    mime: primary.mime
-  };
-  if (primary.headers) resObj.headers = primary.headers;
-  if (alternatives.length > 0) resObj.alternatives = alternatives;
+
+  // Navegador oculto: último recurso, solo con tiempo de sobra y sin relleno de anuncios.
+  if (permitirNavegador) return capturaDeServidor(s, watchRef, hasta);
+  return null;
+}
+
+/** El navegador oculto de un servidor concreto: manifiestos primero, nunca media[0]. */
+async function capturaDeServidor(s, watchRef, hasta) {
+  if (!(typeof kino !== "undefined" && kino.browser && typeof kino.browser.capture === "function")) return null;
+  if (restante(hasta) < 6000) return null;
+  try {
+    const page = await kino.browser.capture(s.src, {
+      timeoutMs: Math.min(15000, restante(hasta) - 3000),
+      match: "\.m3u8|\.mp4",
+      headers: { Referer: watchRef },
+    });
+    const media = (page && Array.isArray(page.media) ? page.media : []).filter((m) => m && m.url && !pareceAnuncio(m.url));
+    const manifiestos = media.filter((m) => m.mime === "application/x-mpegURL" || esManifiesto(m.url));
+    for (const m of manifiestos.slice(0, 3)) {
+      if (await listaSana(m.url, m.headers, hasta)) {
+        return { url: m.url, mime: "application/x-mpegURL", headers: { "User-Agent": UA, Referer: (m.headers && m.headers.Referer) || s.src }, servidor: "Web Player" };
+      }
+    }
+    const mp4 = media.find((m) => /\.mp4(\?|$)/i.test(m.url));
+    if (mp4) return { url: mp4.url, mime: "video/mp4", headers: { "User-Agent": UA, Referer: s.src }, servidor: "Web Player" };
+  } catch (_) { /* sin navegador */ }
+  return null;
+}
+
+/** Igual que `intentaServidor`, pero en paralelo acotado y parando en cuanto hay una copia buena. */
+async function primerasCopias(servidores, watchRef, hasta, limite) {
+  const out = [];
+  const cola = servidores.slice(0, limite);
+  let i = 0;
+  const trabajadores = Array.from({ length: Math.min(2, cola.length) }, async () => {
+    while (i < cola.length) {
+      const s = cola[i++];
+      if (restante(hasta) < 1200) return;
+      const r = await intentaServidor(s, watchRef, hasta, true);
+      if (r && r.url && !pareceAnuncio(r.url)) {
+        out.push({ ...r, orden: s.i, etiqueta: `${s.langLabel} · ${s.titulo}` });
+        if (out.length >= 2) return;
+      }
+    }
+  });
+  await Promise.all(trabajadores);
+  return out.sort((a, b) => a.orden - b.orden);
+}
+
+const refAlt = (watchRef, indice) => `alt:${indice}:${watchRef}`;
+const parseAlt = (ref) => {
+  const m = /^alt:(\d+):([\s\S]+)$/.exec(String(ref || ""));
+  return m ? { indice: Number(m[1]), watch: m[2] } : null;
+};
+
+/** Recorta una copia a la forma que Kino enseña en "Servidor y calidad". */
+function comoAlternativa(copia, watchRef) {
+  const out = { label: String(copia.etiqueta || copia.label || "Copia").slice(0, 120) };
+  if (copia.ref) out.ref = copia.ref;
+  else {
+    out.url = copia.url;
+    if (copia.mime) out.mime = copia.mime;
+    if (copia.headers) out.headers = copia.headers;
+  }
+  return out;
+}
+
+/** `resolve` para una copia diferida (`alt:<n>:<watch>`): abre el reproductor y prueba ese servidor. */
+async function resuelveAlt(ref, hasta) {
+  const alt = parseAlt(ref);
+  if (!alt) throw kino.error("not_found", "copia inválida", { userMessage: "Esa copia ya no está disponible." });
+  const payload = await getPlayerPayload(alt.watch);
+  const servidores = servidoresDe(payload);
+  const s = servidores[alt.indice];
+  if (!s) throw kino.error("not_found", "copia inexistente", { userMessage: "Esa copia ya no está disponible." });
+  const copias = await primerasCopias([s], alt.watch, hasta, 1);
+  const copia = copias[0];
+  if (!copia) throw kino.error("unavailable", "copia sin stream", { userMessage: "Esa copia no se pudo reproducir. Prueba con otra." });
+  // La etiqueta es la del servidor que la persona eligió, no la del hoster que lo sirvió.
+  return armaSalida({ ...copia, etiqueta: `${s.langLabel} · ${s.titulo}` }, alt.watch);
+}
+
+function armaSalida(copia, watchRef) {
+  const resObj = { url: copia.url };
+  if (copia.mime) resObj.mime = copia.mime;
+  if (copia.headers) resObj.headers = copia.headers;
+  if (Array.isArray(copia.subtitles) && copia.subtitles.length) resObj.subtitles = copia.subtitles;
+  resObj.label = String(copia.etiqueta || copia.label || "Servidor").slice(0, 120);
+  if (Array.isArray(copia.alternatives) && copia.alternatives.length) resObj.alternatives = copia.alternatives.slice(0, MAX_ALTERNATIVAS);
   return resObj;
 }
+
+async function resolve(ref) {
+  globalThis.__kinoDropPendingFetches = true;   // Kino suelta los fetches vivos al responder
+  const conNavegador = !!(typeof kino !== "undefined" && kino.browser && typeof kino.browser.capture === "function");
+  const hasta = Date.now() + (conNavegador ? RESOLVE_BROWSER_MS : RESOLVE_MS);
+
+  // 0) Una copia diferida: solo se resuelve esa.
+  if (/^alt:\d+:/.test(String(ref || ""))) {
+    try { return await resuelveAlt(ref, hasta); }
+    catch (e) { throw e && e.code ? e : kino.error("unavailable", "copia sin stream", { userMessage: "No se encontró una copia que se pueda reproducir." }); }
+  }
+
+  // 1) El último enlace bueno: se revalida con una petición y se devuelve al instante.
+  const guardado = cacheGet(claveOk(ref));
+  if (guardado && typeof guardado.url === "string" && Date.now() - (guardado.at || 0) < CACHE_OK) {
+    if (!esManifiesto(guardado.url) || await listaSana(guardado.url, guardado.headers, Date.now() + 4000)) {
+      return armaSalida({ ...guardado, etiqueta: guardado.label });
+    }
+    try { kino.storage.remove(claveOk(ref)); } catch (_) { /* sigue */ }
+  }
+
+  // 2) El reproductor del sitio: si no hay servidores, no hay nada que hacer.
+  let payload = null;
+  try { payload = await getPlayerPayload(ref); } catch (_) { payload = null; }
+  const servidores = servidoresDe(payload);
+  if (!servidores.length) {
+    throw kino.error("not_found", "sin servidores en el reproductor", {
+      userMessage: "Este título no está disponible en GnulaHD.",
+    });
+  }
+
+  // 3) Del hoster que mejor reproduce al que peor.
+  const orden = await ordenaConResolver(servidores, hasta);
+
+  // 4) Presupuesto: unas pocas copias de entrada; el resto, diferidas.
+  const copias = await primerasCopias(orden, ref, hasta, Math.min(INTENTOS_MAX, orden.length));
+  if (copias.length) {
+    const [primera, ...resto] = copias;
+    const alternatives = resto.map((c) => comoAlternativa(c, ref));
+    for (const s of orden.slice(INTENTOS_MAX)) {
+      if (alternatives.length >= MAX_ALTERNATIVAS) break;
+      alternatives.push({ label: `${s.langLabel} · ${s.titulo}`, ref: refAlt(ref, s.i) });
+    }
+    const salida = armaSalida({ ...primera, alternatives }, ref);
+    cacheSet(claveOk(ref), { ...salida, at: Date.now() }, CACHE_OK);
+    return salida;
+  }
+
+  // 5) Nada pasó el filtro. El navegador oculto es el último recurso: como mucho dos intentos y
+  //    solo con tiempo de sobra (en el móvil es lo que salvaba los hosters con puerta JavaScript).
+  if (conNavegador && restante(hasta) > 9000) {
+    for (const s of orden.slice(0, 2)) {
+      const cap = await capturaDeServidor(s, ref, hasta);
+      if (cap) {
+        const salida = armaSalida({ ...cap, etiqueta: `${s.langLabel} · ${s.titulo}`, alternatives: [] }, ref);
+        cacheSet(claveOk(ref), { ...salida, at: Date.now() }, CACHE_OK);
+        return salida;
+      }
+      if (restante(hasta) < 7000) break;
+    }
+  }
+
+  // 6) Se ofrece el resto como copias diferidas antes de rendirse.
+  if (orden.length > 0) {
+    throw kino.error("unavailable", "ningún servidor dio un stream limpio", {
+      userMessage: "No se encontró una copia que se pueda reproducir. Prueba otra calidad en «Servidor y calidad».",
+    });
+  }
+
+  throw kino.error("not_found", "sin copia reproducible", {
+    userMessage: "Este título no está disponible en GnulaHD.",
+  });
+}
+
+/** Kino lo llama al abrir la ficha: deja el enlace listo sin gastar la paciencia de nadie. */
+async function prepare(ref) {
+  try {
+    globalThis.__kinoDropPendingFetches = true;
+    if (/^alt:\d+:/.test(String(ref || ""))) return;
+    if (cacheGet(claveOk(ref))) return;
+    const hasta = Date.now() + 9000;
+    const payload = await getPlayerPayload(ref);
+    const servidores = servidoresDe(payload);
+    if (!servidores.length) return;
+    const orden = await ordenaConResolver(servidores, hasta);
+    const copias = await primerasCopias(orden, ref, hasta, 4);
+    if (!copias.length) return;
+    const [primera, ...resto] = copias;
+    const alternatives = resto.map((c) => comoAlternativa(c, ref));
+    for (const s of orden.slice(4)) {
+      if (alternatives.length >= MAX_ALTERNATIVAS) break;
+      alternatives.push({ label: `${s.langLabel} · ${s.titulo}`, ref: refAlt(ref, s.i) });
+    }
+    cacheSet(claveOk(ref), { ...armaSalida({ ...primera, alternatives }, ref), at: Date.now() }, CACHE_OK);
+  } catch (_) { /* preparar es opcional */ }
+}
+
 async function categories() {
   return [
     { id: "peliculas", ref: "peliculas", title: "Pel\xEDculas", titleEn: "Movies", icon: "movie" },
@@ -1529,6 +1748,7 @@ export {
   categories,
   episodes,
   home,
+  prepare,
   resolve,
   screen,
   screenEvent,
